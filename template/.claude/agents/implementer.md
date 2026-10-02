@@ -27,6 +27,8 @@ Eres un implementador. Tu trabajo es ejecutar **una sola** feature de
 3. **Anota** en `progress/current.md`:
    - `Feature en curso: <id> — <name>`
    - `Plan: tasks de {{SPECS_DIR}}/<name>/tasks.md`
+   Si el leader te encargó solo un subconjunto (una fase o tasks concretas),
+   ejecuta solo esas. Las tasks asignadas a un humano no las haces nunca.
 4. **Para cada task hoja en orden** (una task padre se marca cuando todas sus
    sub-tasks están hechas):
    a. Implementa el cambio que indica la task, siguiendo `design.md`.

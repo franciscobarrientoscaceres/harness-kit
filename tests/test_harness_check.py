@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -252,18 +253,62 @@ class TestDoneAndTraceability(ProjectCase):
         self.assertEqual(self.check()[0], 0)
 
 
-class TestImported(ProjectCase):
-    def test_imported_format_problems_are_warnings(self) -> None:
-        spec = self.add_feature(imported=True)
-        self.edit(spec / "requirements.md", "sin escribir en stdout.", "y DEBE no escribir en stdout.")
+class TestKiroRefVariants(ProjectCase):
+    def set_refs(self, spec: Path, old: str, new: str) -> None:
+        self.edit(spec / "tasks.md", old, new)
+
+    def test_bare_r_refs_with_external_ids(self) -> None:
+        spec = self.add_feature()
+        text = (spec / "tasks.md").read_text(encoding="utf-8")
+        text = re.sub(r"_Requisitos: ([^_]+)_",
+                      lambda m: "_" + ", ".join(
+                          (t if t.strip() in ("ninguno",) else "R" + t.strip()) for t in m.group(1).split(",")
+                      ) + ", F-05_", text)
+        (spec / "tasks.md").write_text(text, encoding="utf-8")
         code, output = self.check()
         self.assertEqual(code, 0, output)
-        self.assertIn("[WARN]  cli_recent: criterio 2.1 tiene 2", output)
+
+    def test_ranges_cover_criteria(self) -> None:
+        spec = self.add_feature()
+        self.set_refs(spec, "_Requisitos: 1.1, 1.2, 1.3, 1.4, 2.1, 2.2, 2.3_", "_R1.1–R1.4, R2.1-2.3_")
+        self.set_refs(spec, "_Requisitos: 2.2, 2.3_", "_Requisitos: ninguno_")
+        self.set_refs(spec, "_Requisitos: 1, 2_", "_Requisitos: ninguno_")
+        code, output = self.check()
+        self.assertEqual(code, 0, output)
+
+    def test_external_only_refs_count_as_refs(self) -> None:
+        spec = self.add_feature()
+        self.set_refs(spec, "_Requisitos: ninguno_\n\n- [ ]* 4.", "_F-29, ADR-10_\n\n- [ ]* 4.")
+        code, output = self.check()
+        self.assertEqual(code, 0, output)
+
+    def test_malformed_requirement_ref_still_fails(self) -> None:
+        spec = self.add_feature()
+        self.set_refs(spec, "_Requisitos: 2.1_", "_Requisitos: 2.1, R2.x_")
+        self.assert_fails_with("referencia inválida «R2.x»")
+
+    def test_italic_prose_is_not_a_ref(self) -> None:
+        self.assertIsNone(harness_check._line_refs("  - _nota sobre el diseño_"))
+        self.assertEqual(harness_check._line_refs("  - _R1, R10, GT-1/2/7/8_"), "R1, R10, GT-1/2/7/8")
+
+
+class TestImported(ProjectCase):
+    def test_imported_format_problems_are_one_summary_line(self) -> None:
+        spec = self.add_feature(imported=True)
+        self.edit(spec / "requirements.md", "sin escribir en stdout.", "y DEBE no escribir en stdout.")
+        self.edit(spec / "tasks.md", "  - _Requisitos: 2.1_\n", "")
+        code, output = self.check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("spec importado con 2 observaciones", output)
+        self.assertIn("1 criterios con varios DEBE", output)
+        self.assertNotIn("criterio 2.1 tiene 2", output)
+        _, verbose = self.check("--verbose")
+        self.assertIn("criterio 2.1 tiene 2", verbose)
 
     def test_imported_done_without_traceability_is_green(self) -> None:
         spec = self.add_feature(status="done", imported=True)
         self.mark_all_tasks_done(spec)
-        code, output = self.check()
+        code, output = self.check("--verbose")
         self.assertEqual(code, 0, output)
         self.assertIn("falta progress/impl_cli_recent.md", output)
 
@@ -410,6 +455,47 @@ class TestRunTests(ProjectCase):
         code, output = self.run_full("--hook", "post")
         self.assertEqual(code, 2, output)
         self.assertIn("tests en rojo", output)
+
+
+class TestHookSpeed(ProjectCase):
+    def layout(self) -> None:
+        for rel in ("src/pkg/__init__.py", "src/pkg/availability/__init__.py", "src/pkg/availability/motor.py",
+                    "src/pkg/registro.py"):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text("", encoding="utf-8")
+        for rel in ("tests/unit/test_availability.py", "tests/unit/test_motor_props.py"):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text("", encoding="utf-8")
+
+    def related(self, rel: str):
+        found = harness_check.related_tests(self.root, harness_check.load_config(self.root), rel)
+        return None if found is None else sorted(p.name for p in found)
+
+    def test_related_tests_by_module_then_package(self) -> None:
+        self.layout()
+        self.assertEqual(self.related("src/pkg/availability/motor.py"), ["test_motor_props.py"])
+        self.assertEqual(self.related("src/pkg/availability/__init__.py"), ["test_availability.py"])
+        self.assertEqual(self.related("src/pkg/registro.py"), [])
+        self.assertEqual(self.related("tests/unit/test_availability.py"), ["test_availability.py"])
+        self.assertIsNone(self.related("tests/conftest.py"))
+
+    def test_stop_hook_skips_tests_when_code_unchanged(self) -> None:
+        self.edit(self.root / "harness.toml", "{python} -m pytest -q", "{python} -m unittest discover -s {tests_dir} -q")
+        (self.root / "tests").mkdir()
+        test_file = self.root / "tests" / "test_ok.py"
+        test_file.write_text("import unittest\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n",
+                             encoding="utf-8")
+        config = harness_check.load_config(self.root)
+        self.assertFalse(harness_check.code_unchanged_since_green(self.root, config))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            self.assertEqual(harness_check.main(["--root", str(self.root), "--hook", "stop"]), 0)
+        self.assertTrue(harness_check.code_unchanged_since_green(self.root, config))
+        import os
+        import time
+        later = time.time() + 5
+        os.utime(test_file, (later, later))
+        self.assertFalse(harness_check.code_unchanged_since_green(self.root, config))
 
 
 class TestTomlFallback(unittest.TestCase):

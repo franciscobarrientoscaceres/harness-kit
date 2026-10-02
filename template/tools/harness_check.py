@@ -41,6 +41,8 @@ STEERING_FILES = ("product.md", "tech.md", "structure.md")
 FILL_MARKER = "<!-- RELLENAR -->"
 NO_TESTS_EXIT_CODE = 5
 VENV_DIRS = (".venv", "venv", "env")
+CACHE_DIR = ".harness-cache"
+GREEN_STAMP = "last_green"
 
 DEFAULT_CONFIG = {
     "project": {"name": ""},
@@ -53,7 +55,7 @@ DEFAULT_CONFIG = {
         "steering_dir": ".kiro/steering",
     },
     "commands": {"python": "", "test": "{python} -m pytest -q", "test_fast": ""},
-    "hooks": {"post_tests": True, "post_timeout": 150, "stop_timeout": 280},
+    "hooks": {"post_tests": True, "post_scope": "related", "post_timeout": 150, "stop_timeout": 280},
     "harness": {"min_python": "3.9"},
 }
 
@@ -69,12 +71,28 @@ SOFT_VERB = re.compile(r"\b(?:podr[ií]a|puede|soporta|deber[ií]a|should|could|
 TASK = re.compile(r"^(\s*)- \[([ xX])\](\*?)\s+(\d+(?:\.\d+)*)\.?\s+(.*)$")
 TASK_REFS = re.compile(r"_(?:Requisitos|Requirements)\s*:\s*([^_]+)_", re.IGNORECASE)
 NO_REFS = {"ninguno", "ninguna", "none", "-", "—", "n/a"}
+# Línea que es solo una referencia en cursiva, estilo `_R1, R2.4, F-05_` (variante habitual de Kiro).
+BARE_REFS = re.compile(r"^\s*(?:-\s*)?_([^_]+)_\s*$")
+REF_TOKEN = re.compile(r"(?<![\w/-])R?\d+(?:\.\d+)?(?![\w/-])", re.IGNORECASE)
+REQ_REF = re.compile(r"R?(\d+(?:\.\d+)?)", re.IGNORECASE)
+EXTERNAL_REF = re.compile(r"[A-Za-z]+-[\w/.-]+")
+# Rango de criterios: `R2.1–R2.3`, `R2.1-2.3`, `2.1–2.3` (mismo requisito).
+REF_RANGE = re.compile(r"R?(\d+)\.(\d+)\s*[–—-]\s*R?(?:\1\.)?(\d+)", re.IGNORECASE)
+ISSUE_LABELS = (
+    ("`DEBE`; parte", "criterios con varios DEBE"),
+    ("sin `_Requisitos", "tasks sin referencia a requisitos"),
+    ("no está cubierto", "criterios sin task"),
+    ("no usa EARS", "criterios sin DEBE/SHALL"),
+    ("verbo blando", "verbos blandos"),
+    ("Historia de usuario", "requisitos sin historia de usuario"),
+)
 TRACE_LINE = re.compile(r"^\s*-\s*(\d+\.\d+)\s*(?:→|->|:)\s*(.+)$", re.MULTILINE)
 
 
 class Report:
-    def __init__(self, quiet: bool = False) -> None:
+    def __init__(self, quiet: bool = False, verbose: bool = False) -> None:
         self.quiet = quiet
+        self.verbose = verbose
         self.failures: list[str] = []
         self.warnings: list[str] = []
 
@@ -187,6 +205,21 @@ def parse_requirements(text: str) -> tuple[dict[int, dict], list[str]]:
     return reqs, errors
 
 
+def _is_ref_token(token: str) -> bool:
+    token = token.strip()
+    return bool(REQ_REF.fullmatch(token) or REF_RANGE.fullmatch(token) or EXTERNAL_REF.fullmatch(token))
+
+
+def _line_refs(line: str) -> str | None:
+    labeled = TASK_REFS.search(line)
+    if labeled:
+        return labeled.group(1)
+    bare = BARE_REFS.match(line)
+    if bare and any(_is_ref_token(tok) for tok in bare.group(1).split(",")):
+        return bare.group(1)
+    return None
+
+
 def parse_tasks(text: str) -> list[dict]:
     tasks: list[dict] = []
     for line in text.splitlines():
@@ -199,13 +232,10 @@ def parse_tasks(text: str) -> list[dict]:
                 "text": match.group(5),
                 "refs_raw": [],
             })
-            refs = TASK_REFS.search(line)
+        if tasks:
+            refs = _line_refs(line)
             if refs:
-                tasks[-1]["refs_raw"].append(refs.group(1))
-        elif tasks:
-            refs = TASK_REFS.search(line)
-            if refs:
-                tasks[-1]["refs_raw"].append(refs.group(1))
+                tasks[-1]["refs_raw"].append(refs)
     for task in tasks:
         task["leaf"] = not any(other["id"].startswith(task["id"] + ".") for other in tasks)
     return tasks
@@ -221,7 +251,44 @@ def validate_kiro_spec(name: str, spec_dir: Path, status: str, report: Report,
 
     Con `strict=False` (features importadas) los problemas de formato son avisos.
     """
-    err = report.fail if strict else report.warn
+    issues: list[str] = []
+
+    def err(message: str) -> None:
+        if strict:
+            report.fail(message)
+        else:
+            issues.append(message)
+
+    def note(message: str) -> None:
+        if strict:
+            report.warn(message)
+        else:
+            issues.append(message)
+
+    try:
+        return _validate_kiro_spec(name, spec_dir, status, report, err, note)
+    finally:
+        _summarize_issues(name, issues, report)
+
+
+def _summarize_issues(name: str, issues: list[str], report: Report) -> None:
+    """Spec importado: una línea con el resumen en vez de cientos de avisos."""
+    if not issues:
+        return
+    if report.verbose:
+        for issue in issues:
+            report.warn(issue)
+        return
+    counts: dict[str, int] = {}
+    for issue in issues:
+        label = next((lbl for key, lbl in ISSUE_LABELS if key in issue), "otras observaciones")
+        counts[label] = counts.get(label, 0) + 1
+    detail = ", ".join(f"{n} {label}" for label, n in counts.items())
+    report.warn(f"{name}: spec importado con {len(issues)} observaciones de formato ({detail}); "
+                "no bloquean. Detalle: python tools/harness_check.py --verbose")
+
+
+def _validate_kiro_spec(name: str, spec_dir: Path, status: str, report: Report, err, note) -> list[str]:
     req_text = (spec_dir / "requirements.md").read_text(encoding="utf-8")
     task_text = (spec_dir / "tasks.md").read_text(encoding="utf-8")
     prefix = f"{name}:"
@@ -235,7 +302,7 @@ def validate_kiro_spec(name: str, spec_dir: Path, status: str, report: Report,
 
     expected = list(range(1, len(reqs) + 1))
     if sorted(reqs) != expected:
-        report.warn(f"{prefix} los requisitos no están numerados 1..{len(reqs)} de forma consecutiva")
+        note(f"{prefix} los requisitos no están numerados 1..{len(reqs)} de forma consecutiva")
 
     for n, req in sorted(reqs.items()):
         if not req["story"]:
@@ -252,7 +319,7 @@ def validate_kiro_spec(name: str, spec_dir: Path, status: str, report: Report,
                 err(f"{prefix} criterio {n}.{m} tiene {len(modals)} `DEBE`; parte en varios criterios")
             soft = SOFT_VERB.search(criterion)
             if soft:
-                report.warn(f"{prefix} criterio {n}.{m} usa verbo blando «{soft.group(0)}»")
+                note(f"{prefix} criterio {n}.{m} usa verbo blando «{soft.group(0)}»")
 
     ids = criterion_ids(reqs)
     tasks = parse_tasks(task_text)
@@ -264,12 +331,23 @@ def validate_kiro_spec(name: str, spec_dir: Path, status: str, report: Report,
     for task in tasks:
         refs: list[str] = []
         for raw in task["refs_raw"]:
-            refs.extend(token.strip() for token in raw.split(",") if token.strip())
+            for token in (tok.strip() for tok in raw.split(",") if tok.strip()):
+                span = REF_RANGE.fullmatch(token)
+                if span:
+                    req, first, last = span.group(1), int(span.group(2)), int(span.group(3))
+                    refs.extend(f"{req}.{m}" for m in range(first, last + 1))
+                else:
+                    refs.append(token)
         if task["leaf"] and not refs:
             err(f"{prefix} task {task['id']} sin `_Requisitos: ..._` (usa `_Requisitos: ninguno_` si es deliberado)")
         for ref in refs:
             if ref.lower() in NO_REFS:
                 continue
+            req_ref = REQ_REF.fullmatch(ref)
+            if req_ref:
+                ref = req_ref.group(1)
+            elif not re.match(r"R?\d", ref, re.IGNORECASE):
+                continue  # referencia externa: hallazgos F-xx, ADR-xx, decisiones D-xx, Properties…
             if re.fullmatch(r"\d+\.\d+", ref):
                 if ref not in ids:
                     err(f"{prefix} task {task['id']} referencia el criterio inexistente {ref}")
@@ -460,8 +538,77 @@ def _has_module(python: str, module: str) -> bool:
     return result.returncode == 0
 
 
+def related_tests(root: Path, config: dict, edited: str) -> list[Path] | None:
+    """Tests relacionados con el archivo editado. None = no se sabe (correr todo); [] = ninguno."""
+    tests_dir = (root / config["paths"]["tests_dir"]).resolve()
+    try:
+        path = Path(edited)
+        path = (path if path.is_absolute() else root / path).resolve()
+    except (OSError, ValueError):
+        return None
+    if tests_dir in path.parents:
+        return [path] if path.name.startswith("test") else None
+    # Primero el módulo; si no tiene tests propios, el paquete que lo contiene
+    # (availability/motor.py → test_motor.py, si no test_availability.py).
+    names = [] if path.stem == "__init__" else [path.stem]
+    src_dir = (root / config["paths"]["src_dir"]).resolve()
+    for parent in path.parents:
+        if parent in (src_dir, root.resolve()) or src_dir not in parent.parents:
+            break
+        names.append(parent.name)
+    for stem in names:
+        found: set[Path] = set()
+        for pattern in (f"test_{stem}.py", f"test_{stem}_*.py", f"{stem}_test.py"):
+            found.update(tests_dir.rglob(pattern))
+        if found:
+            return sorted(found)
+    return []
+
+
+def _code_fingerprint(root: Path, config: dict) -> float:
+    latest = 0.0
+    for rel in (config["paths"]["src_dir"], config["paths"]["tests_dir"]):
+        base = root / rel
+        if base.is_dir():
+            for path in base.rglob("*.py"):
+                try:
+                    latest = max(latest, path.stat().st_mtime)
+                except OSError:
+                    continue
+    return latest
+
+
+def _stamp_path(root: Path) -> Path:
+    return root / CACHE_DIR / GREEN_STAMP
+
+
+def code_unchanged_since_green(root: Path, config: dict) -> bool:
+    try:
+        stamp = float(_stamp_path(root).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return False
+    return _code_fingerprint(root, config) <= stamp
+
+
+def mark_green(root: Path, config: dict) -> None:
+    try:
+        _stamp_path(root).parent.mkdir(exist_ok=True)
+        _stamp_path(root).write_text(str(_code_fingerprint(root, config)), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _targeted(command: str, targets: list[Path], root: Path) -> str:
+    rels = [os.path.relpath(t, root) for t in targets]
+    if "pytest" in command:
+        return command + " " + " ".join(_quote(r) for r in rels)
+    if "unittest discover" in command:
+        return " && ".join(f"{command} -p {_quote(Path(r).name)}" for r in rels)
+    return command
+
+
 def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
-              fast: bool = False, timeout: int | None = None) -> str:
+              fast: bool = False, timeout: int | None = None, targets: list[Path] | None = None) -> str:
     report.section("4. Tests")
     tests_dir = config["paths"]["tests_dir"]
     if not (root / tests_dir).is_dir():
@@ -476,6 +623,8 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
         )
         return ""
     command = command.replace("{python}", _quote(python)).replace("{tests_dir}", tests_dir)
+    if targets:
+        command = _targeted(command, targets, root)
     try:
         proc = subprocess.run(
             command, shell=True, cwd=root, capture_output=True, text=True,
@@ -498,6 +647,8 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
         report.warn("No se encontró ningún test")
     elif proc.returncode == 0:
         report.ok(f"Tests verdes ({command})")
+        if not targets:
+            mark_green(root, config)
     else:
         report.fail(f"Hay tests rotos ({command}, exit {proc.returncode})")
     return output
@@ -505,14 +656,14 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
 
 # ── Modos de ejecución ───────────────────────────────────────────────────────
 
-def _edited_python_file() -> bool:
-    """En modo hook post: True si la herramienta tocó un .py (o si no se puede saber).
+def _edited_path() -> str | None:
+    """En modo hook post: ruta del .py editado ("" si no se sabe; None si no es un .py).
 
     Claude Code envía el evento por stdin y lo cierra; si stdin es una terminal o
     un pipe que nadie cierra (ejecución manual), no se bloquea: espera 2 s y sigue.
     """
     if sys.stdin is None or sys.stdin.isatty():
-        return True
+        return ""
     received: list[str] = []
     try:
         fd = sys.stdin.fileno()
@@ -536,9 +687,9 @@ def _edited_python_file() -> bool:
     try:
         payload = json.loads(received[0] or "{}") if received else {}
     except (ValueError, OSError):
-        return True
-    path = (payload.get("tool_input") or {}).get("file_path", "")
-    return not path or path.endswith(".py")
+        return ""
+    path = (payload.get("tool_input") or {}).get("file_path", "") or ""
+    return path if not path or path.endswith(".py") else None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -553,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-tests", action="store_true", help="no ejecutar los tests")
     parser.add_argument("--tests-only", action="store_true", help="solo ejecutar los tests")
     parser.add_argument("--hook", choices=("post", "stop"), help="modo hook de Claude Code")
+    parser.add_argument("--verbose", action="store_true", help="detalle completo de specs importados")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -560,25 +712,34 @@ def main(argv: list[str] | None = None) -> int:
 
     hooks = config["hooks"]
     if args.hook == "post":
-        if not hooks.get("post_tests", True) or not _edited_python_file():
+        edited = _edited_path()
+        if not hooks.get("post_tests", True) or edited is None:
             return 0
+        targets = None
+        if edited and hooks.get("post_scope", "related") == "related" and not config["commands"].get("test_fast"):
+            targets = related_tests(root, config, edited)
+            if targets == []:
+                return 0  # sin tests relacionados: la suite completa corre en el hook Stop
         report = Report(quiet=True)
         output = run_tests(root, config, report, quiet_output=True, fast=True,
-                           timeout=int(hooks.get("post_timeout", 150)))
+                           timeout=int(hooks.get("post_timeout", 150)), targets=targets)
         if report.failures:
             tail = "\n".join(output.splitlines()[-15:])
             print(f"[harness] tests en rojo tras la edición:\n{tail}", file=sys.stderr)
             return 2
         return 0
 
-    report = Report(quiet=args.hook == "stop")
+    report = Report(quiet=args.hook == "stop", verbose=args.verbose)
     if not args.tests_only:
         check_environment(config, report)
         check_base_files(root, config, report)
         check_features(root, config, report)
     if not args.no_tests:
-        timeout = int(hooks.get("stop_timeout", 280)) if args.hook == "stop" else None
-        run_tests(root, config, report, quiet_output=False, timeout=timeout)
+        if args.hook == "stop" and code_unchanged_since_green(root, config):
+            report.ok("Sin cambios de código desde el último verde: no se repiten los tests")
+        else:
+            timeout = int(hooks.get("stop_timeout", 280)) if args.hook == "stop" else None
+            run_tests(root, config, report, quiet_output=False, timeout=timeout)
 
     if args.hook == "stop":
         if report.failures:

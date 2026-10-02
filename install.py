@@ -54,12 +54,12 @@ SIDECAR_WITH_POINTER = {
     "AGENTS.md": "\n{marker}\n> **Arnés SDD (harness-kit):** el flujo multiagente y Spec Driven Development "
                  "de este repo está descrito en [`AGENTS.harness.md`](AGENTS.harness.md). Léelo primero.\n",
 }
-GITIGNORE_LINES = ("__pycache__/", ".pytest_cache/", "*.tmp", f"{BACKUP_DIR}/")
+GITIGNORE_LINES = ("__pycache__/", ".pytest_cache/", "*.tmp", f"{BACKUP_DIR}/", ".harness-cache/")
 GITATTRIBUTES_LINES = ("*.sh text eol=lf",)
-OVERLAP_KEYWORDS = re.compile(
-    r"spec|plan|implement|coder?\b|review|orquest|orchestr|lead|architect|test|qa\b|desarroll|develop",
-    re.IGNORECASE,
-)
+# Solo el NOMBRE decide si un agente propio duplica un rol del arnés; los demás son
+# especialistas que el leader usa cuando tasks.md se los asigna.
+OVERLAP_NAMES = re.compile(r"review|revis|leader|lider|líder|orchestr|orquest|implement|spec[-_]?author|planner",
+                           re.IGNORECASE)
 
 
 def _load_checker():
@@ -147,7 +147,7 @@ def inspect_project(target: Path) -> dict:
             if path.stem in AGENT_NAMES:
                 continue
             description = agent_description(path)
-            overlaps = bool(OVERLAP_KEYWORDS.search(f"{path.stem} {description}"))
+            overlaps = bool(OVERLAP_NAMES.search(path.stem))
             other_agents.append({"name": path.stem, "description": description, "overlaps": overlaps})
 
     kiro_specs = spec_dirs(target / ".kiro" / "specs")
@@ -485,11 +485,20 @@ class Installer:
         known = {f.get("name") for f in features}
         next_id = max((f.get("id", 0) for f in features if isinstance(f.get("id"), int)), default=0) + 1
         imported = []
+        busy = any(f.get("status") == "in_progress" for f in features)
         for spec_dir in spec_dirs(self.target / self.values["SPECS_DIR"]):
             if spec_dir.name in known:
                 continue
             tasks = checker.parse_tasks(_read(spec_dir / "tasks.md"))
             done = bool(tasks) and all(t["checked"] or t["optional"] for t in tasks)
+            started = any(t["checked"] for t in tasks)
+            if done:
+                status = "done"
+            elif started and not busy:
+                status, busy = "in_progress", True
+            else:
+                status = "spec_ready"
+            pending = sum(1 for t in tasks if not t["checked"] and not t["optional"])
             title = re.search(r"^#\s+(.+)$", _read(spec_dir / "requirements.md"), re.MULTILINE)
             features.append({
                 "id": next_id,
@@ -499,10 +508,11 @@ class Installer:
                 "acceptance": [],
                 "sdd": True,
                 "imported": True,
-                "status": "done" if done else "spec_ready",
+                "status": status,
             })
             next_id += 1
-            imported.append(f"{spec_dir.name} ({'done' if done else 'spec_ready'})")
+            progress = f", {len(tasks) - pending}/{len(tasks)} tasks hechas" if tasks else ""
+            imported.append(f"{spec_dir.name} ({status}{progress})")
         if imported:
             self.write(rel, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
             for item in imported:
@@ -554,9 +564,13 @@ def print_profile(profile: dict, values: dict[str, str]) -> None:
         print(f"  - feature_list.json con otro formato: el arnés usará {values['FEATURE_LIST']}")
     if profile["venv"]:
         print(f"  - virtualenv {profile['venv']}/: los tests se ejecutarán con su intérprete")
+    specialists = [a["name"] for a in profile["other_agents"] if not a["overlaps"]]
+    if specialists:
+        print(f"  - agentes especialistas del proyecto: {', '.join(specialists)} "
+              "(el leader los usará cuando tasks.md les asigne una task)")
     for agent in profile["other_agents"]:
-        flag = "  ← posible solapamiento de rol" if agent["overlaps"] else ""
-        print(f"  - agente propio: {agent['name']}{flag}")
+        if agent["overlaps"]:
+            print(f"  - agente propio: {agent['name']}  ← mismo rol que un agente del arnés")
     if not any((profile["ours"], profile["foreign_signals"], profile["kiro_specs"], profile["spec_kit"],
                 profile["venv"], profile["other_agents"])):
         print("  - proyecto sin arnés previo")
@@ -645,8 +659,9 @@ def main(argv: list[str] | None = None) -> int:
                         + "; ".join(profile["legacy_hooks"]))
     overlapping = [a["name"] for a in profile["other_agents"] if a["overlaps"]]
     if overlapping:
-        warnings.append(f"agentes propios que pueden solaparse con leader/spec_author/implementer/reviewer: "
-                        f"{', '.join(overlapping)}. Revisa .claude/agents/ y elimina o renombra los que sobren.")
+        warnings.append(f"{', '.join(overlapping)} cumple(n) un rol parecido a leader/spec_author/implementer/"
+                        "reviewer. No hace falta borrarlos: el reviewer del arnés es la puerta final y el leader "
+                        "le pasa el checklist del revisor propio. Si prefieres uno solo, decide cuál conservar.")
     if any(".harness.md" in r for _, r in installer.log):
         warnings.append("tu CLAUDE.md/AGENTS.md ya existían: se creó un *.harness.md y una referencia al final del tuyo.")
     if warnings:
@@ -663,8 +678,9 @@ def main(argv: list[str] | None = None) -> int:
         steps.append("Pide al leader: «migra los specs legacy a formato Kiro» "
                      f"({', '.join(profile['legacy_specs'])}).")
     if imported:
-        steps.append("Revisa las features importadas (\"imported\": true): las que quedaron en spec_ready "
-                     "esperan tu aprobación antes de implementarse.")
+        steps.append("Revisa las features importadas (\"imported\": true): las que están en spec_ready esperan "
+                     "tu aprobación; la que quedó en in_progress (spec ya empezado) se retoma con «continúa con la "
+                     "feature en curso».")
     steps.append("Ejecuta ./init.sh (o ./init.ps1) — incluye los tests — y luego, en Claude Code: "
                  "«implementa la siguiente feature pendiente».")
     print("\nSiguientes pasos:")
