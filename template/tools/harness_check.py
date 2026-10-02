@@ -19,6 +19,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 VALID_STATUS = ("pending", "spec_ready", "in_progress", "done", "blocked")
@@ -452,7 +453,8 @@ def _quote(arg: str) -> str:
 
 def _has_module(python: str, module: str) -> bool:
     try:
-        result = subprocess.run([python, "-c", f"import {module}"], capture_output=True, timeout=60)
+        result = subprocess.run([python, "-c", f"import {module}"], capture_output=True, timeout=60,
+                                stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
@@ -477,7 +479,7 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
     try:
         proc = subprocess.run(
             command, shell=True, cwd=root, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            encoding="utf-8", errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         report.warn(
@@ -504,9 +506,35 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
 # ── Modos de ejecución ───────────────────────────────────────────────────────
 
 def _edited_python_file() -> bool:
-    """En modo hook post: True si la herramienta tocó un .py (o si no se puede saber)."""
+    """En modo hook post: True si la herramienta tocó un .py (o si no se puede saber).
+
+    Claude Code envía el evento por stdin y lo cierra; si stdin es una terminal o
+    un pipe que nadie cierra (ejecución manual), no se bloquea: espera 2 s y sigue.
+    """
+    if sys.stdin is None or sys.stdin.isatty():
+        return True
+    received: list[str] = []
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        fd = sys.stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        received.append(sys.stdin.read())
+    else:
+        def read_fd() -> None:
+            chunks = []
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            received.append(b"".join(chunks).decode("utf-8", "replace"))
+
+        # os.read sobre el descriptor (no sys.stdin) para que un hilo bloqueado no
+        # impida terminar el proceso en Windows.
+        reader = threading.Thread(target=read_fd, daemon=True)
+        reader.start()
+        reader.join(2)
+    try:
+        payload = json.loads(received[0] or "{}") if received else {}
     except (ValueError, OSError):
         return True
     path = (payload.get("tool_input") or {}).get("file_path", "")
@@ -569,4 +597,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # os._exit: un hilo leyendo un stdin que nadie cierra no debe retener el proceso.
+    os._exit(exit_code)
