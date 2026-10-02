@@ -499,6 +499,99 @@ class TestHookSpeed(ProjectCase):
         self.assertFalse(harness_check.code_unchanged_since_green(self.root, config))
 
 
+class TestAutoCommit(ProjectCase):
+    def git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", *args], cwd=cwd or self.root, capture_output=True, text=True,
+                              stdin=subprocess.DEVNULL)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.edit(self.root / "harness.toml", "{python} -m pytest -q", "{python} -m unittest discover -s {tests_dir} -q")
+        self.git("init", "-q")
+        self.git("config", "user.email", "francisco.barrientos@trinasolar.com")
+        self.git("config", "user.name", "Francisco Barrientos")
+        self.git("config", "commit.gpgsign", "false")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "base")
+        self.base = self.head()
+
+    def head(self) -> str:
+        return self.git("rev-parse", "HEAD").stdout.strip()
+
+    def close_feature(self, status: str = "done") -> None:
+        spec = self.add_feature(status=status)
+        self.mark_all_tasks_done(spec)
+        self.write_impl_and_tests()
+
+    def commit(self) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            code = harness_check.main(["--root", str(self.root), "--commit", "cli_recent"])
+        return code, out.getvalue()
+
+    def test_green_feature_is_committed(self) -> None:
+        self.close_feature()
+        code, output = self.commit()
+        self.assertEqual(code, 0, output)
+        self.assertNotEqual(self.head(), self.base)
+        log = self.git("log", "-1", "--format=%ae%n%B").stdout
+        self.assertIn("francisco.barrientos@trinasolar.com", log)
+        self.assertIn("cli_recent:", log)
+        self.assertIn("Spec: specs/cli_recent/", log)
+        self.assertEqual(self.git("status", "--porcelain").stdout.strip(), "")
+
+    def test_red_tests_block_the_commit(self) -> None:
+        self.close_feature()
+        (self.root / "tests" / "test_rojo.py").write_text(
+            "import unittest\nclass T(unittest.TestCase):\n    def test_bad(self):\n        self.assertEqual(1, 2)\n",
+            encoding="utf-8")
+        code, output = self.commit()
+        self.assertEqual(code, 1, output)
+        self.assertIn("NO se hace commit", output)
+        self.assertEqual(self.head(), self.base)
+
+    def test_invalid_spec_blocks_the_commit(self) -> None:
+        self.close_feature()
+        self.write_impl_and_tests(trace="## Trazabilidad\n- 1.1 → `test_recent_default_limit_orders_desc`\n")
+        code, output = self.commit()
+        self.assertEqual(code, 1, output)
+        self.assertEqual(self.head(), self.base)
+
+    def test_feature_not_done_is_not_committed(self) -> None:
+        self.close_feature(status="in_progress")
+        code, output = self.commit()
+        self.assertEqual(code, 1, output)
+        self.assertIn("no en done", output)
+        self.assertEqual(self.head(), self.base)
+
+    def test_auto_commit_can_be_disabled(self) -> None:
+        self.close_feature()
+        self.edit(self.root / "harness.toml", "auto_commit = true", "auto_commit = false")
+        code, output = self.commit()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.head(), self.base)
+
+    def test_not_a_git_repo_is_skipped(self) -> None:
+        (self.root / ".git").rename(self.root / "_git_desactivado")
+        self.close_feature()
+        code, output = self.commit()
+        self.assertEqual(code, 0, output)
+        self.assertIn("no es un repositorio git", output)
+
+    def test_auto_push_publishes_to_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as remote_dir:
+            self.git("init", "-q", "--bare", remote_dir, cwd=Path(remote_dir))
+            self.git("remote", "add", "origin", remote_dir)
+            branch = self.git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            self.git("push", "-q", "-u", "origin", branch)
+            self.close_feature()
+            self.edit(self.root / "harness.toml", "auto_push = false", "auto_push = true")
+            code, output = self.commit()
+            self.assertEqual(code, 0, output)
+            remote_head = self.git("rev-parse", branch, cwd=Path(remote_dir)).stdout.strip()
+            self.assertEqual(remote_head, self.head())
+
+
 class TestTomlFallback(unittest.TestCase):
     def test_subset_parser_reads_installed_config(self) -> None:
         text = '[paths]\nsrc_dir = "app"  # comentario\n[commands]\ntest = "{python} -m pytest -q"\n' \

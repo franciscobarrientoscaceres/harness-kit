@@ -57,6 +57,7 @@ DEFAULT_CONFIG = {
     "commands": {"python": "", "test": "{python} -m pytest -q", "test_fast": ""},
     "hooks": {"post_tests": True, "post_scope": "related", "post_timeout": 150, "stop_timeout": 280},
     "harness": {"min_python": "3.9"},
+    "git": {"auto_commit": True, "auto_push": False},
 }
 
 REQ_HEADING = re.compile(r"^###\s+(?:Requisito|Requirement)\s+(\d+)\b.*$", re.IGNORECASE | re.MULTILINE)
@@ -692,6 +693,75 @@ def _edited_path() -> str | None:
     return path if not path or path.endswith(".py") else None
 
 
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", stdin=subprocess.DEVNULL)
+
+
+def commit_feature(root: Path, config: dict, name: str, verbose: bool = False) -> int:
+    """Commit de una feature cerrada si y solo si la verificación completa (con tests) está en verde."""
+    git_config = config.get("git", {})
+    if not git_config.get("auto_commit", True):
+        print("[harness] git.auto_commit = false en harness.toml: no se hace commit.")
+        return 0
+    try:
+        inside = _git(root, "rev-parse", "--is-inside-work-tree")
+    except OSError:
+        print("[harness] git no está disponible: no se hace commit.")
+        return 0
+    if inside.returncode != 0:
+        print("[harness] el proyecto no es un repositorio git: no se hace commit.")
+        return 0
+
+    feature_list = config["paths"]["feature_list"]
+    try:
+        features = json.loads((root / feature_list).read_text(encoding="utf-8-sig"))["features"]
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"[FAIL]  No se pudo leer {feature_list}: {exc}. No se hace commit.")
+        return 1
+    feature = next((f for f in features if f.get("name") == name), None)
+    if feature is None:
+        print(f"[FAIL]  La feature «{name}» no existe en {feature_list}. No se hace commit.")
+        return 1
+    if feature.get("status") != "done":
+        print(f"[FAIL]  La feature «{name}» está en {feature.get('status')}, no en done. No se hace commit.")
+        return 1
+
+    report = Report(verbose=verbose)
+    check_environment(config, report)
+    check_base_files(root, config, report)
+    check_features(root, config, report)
+    run_tests(root, config, report, quiet_output=True)
+    report.section("5. Commit")
+    if report.failures:
+        print(f"[FAIL]  Verificación en rojo ({len(report.failures)} error(es)): NO se hace commit.")
+        return 1
+
+    _git(root, "add", "-A")
+    if _git(root, "diff", "--cached", "--quiet").returncode == 0:
+        print("[OK]    Todo en verde y no hay cambios pendientes: nada que commitear.")
+        return 0
+    title = feature.get("title") or name
+    spec = f"{config['paths']['specs_dir']}/{name}/"
+    message = (f"{name}: {title}\n\nFeature #{feature.get('id')} cerrada por el arnés SDD "
+               f"(reviewer APPROVED, verificación y tests en verde).\n"
+               f"Spec: {spec}\nTrazabilidad: progress/impl_{name}.md\nReview: progress/review_{name}.md\n")
+    result = _git(root, "commit", "-q", "-m", message)
+    if result.returncode != 0:
+        print(f"[FAIL]  git commit falló: {(result.stderr or result.stdout).strip()}")
+        return 1
+    sha = _git(root, "rev-parse", "--short", "HEAD").stdout.strip()
+    print(f"[OK]    Commit {sha}: {name}: {title}")
+
+    if git_config.get("auto_push", False):
+        pushed = _git(root, "push")
+        if pushed.returncode != 0:
+            print(f"[FAIL]  El commit {sha} quedó en local pero git push falló: {(pushed.stderr or '').strip()}")
+            return 1
+        print(f"[OK]    Push hecho ({sha}).")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -705,10 +775,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tests-only", action="store_true", help="solo ejecutar los tests")
     parser.add_argument("--hook", choices=("post", "stop"), help="modo hook de Claude Code")
     parser.add_argument("--verbose", action="store_true", help="detalle completo de specs importados")
+    parser.add_argument("--commit", metavar="FEATURE",
+                        help="commit de una feature done si y solo si toda la verificación (con tests) pasa")
     args = parser.parse_args(argv)
 
     root = Path(args.root).resolve()
     config = load_config(root)
+    if args.commit:
+        return commit_feature(root, config, args.commit, verbose=args.verbose)
 
     hooks = config["hooks"]
     if args.hook == "post":
