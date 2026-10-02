@@ -239,7 +239,8 @@ def detect_python_cmd() -> str:
     candidates = ("python", "py", "python3") if os.name == "nt" else ("python3", "python")
     for candidate in candidates:
         try:
-            result = subprocess.run([candidate, "-c", "import sys"], capture_output=True, timeout=10)
+            result = subprocess.run([candidate, "-c", "import sys"], capture_output=True, timeout=10,
+                                    stdin=subprocess.DEVNULL)
         except (OSError, subprocess.TimeoutExpired):
             continue
         if result.returncode == 0:
@@ -566,6 +567,7 @@ def run_check(target: Path) -> int:
     proc = subprocess.run(
         [sys.executable, str(target / "tools" / "harness_check.py"), "--no-tests"],
         cwd=target, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        stdin=subprocess.DEVNULL,
     )
     lines = [line for line in proc.stdout.splitlines() if line.startswith(("[FAIL]", "[WARN]"))]
     print("\nVerificación (sin tests):")

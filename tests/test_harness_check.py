@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -290,9 +291,29 @@ class TestConfigurablePaths(ProjectCase):
 class TestRunTests(ProjectCase):
     def run_full(self, *extra: str) -> tuple[int, str]:
         out = io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
-            code = harness_check.main(["--root", str(self.root), "--tests-only", *extra])
+        original_stdin = sys.stdin
+        sys.stdin = io.StringIO('{"tool_input": {"file_path": "src/x.py"}}')
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                code = harness_check.main(["--root", str(self.root), "--tests-only", *extra])
+        finally:
+            sys.stdin = original_stdin
         return code, out.getvalue()
+
+    def test_post_hook_does_not_block_on_open_stdin(self) -> None:
+        self.use_unittest()
+        self.write_failing_test()
+        script = self.root / "tools" / "harness_check.py"
+        proc = subprocess.Popen([sys.executable, str(script), "--hook", "post"], stdin=subprocess.PIPE,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            returncode = proc.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            self.fail("el hook se quedó bloqueado esperando stdin")
+        finally:
+            proc.stdin.close()
+        self.assertEqual(returncode, 2)
 
     def use_unittest(self) -> None:
         self.edit(self.root / "harness.toml", "{python} -m pytest -q", "{python} -m unittest discover -s {tests_dir} -q")
