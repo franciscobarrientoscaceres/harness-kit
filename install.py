@@ -381,6 +381,10 @@ class Installer:
         if rel == ".claude/settings.json":
             self.merge_settings(rel, current, text)
             return
+        if rel in SIDECAR_WITH_POINTER and not is_harness_file(rel, current):
+            # Un CLAUDE.md / AGENTS.md escrito por el usuario nunca se reemplaza, ni con --force.
+            self.install_root_doc(rel, current, text)
+            return
         if self.mode == "force":
             self.replace(rel, text)
             return
@@ -654,10 +658,11 @@ def main(argv: list[str] | None = None) -> int:
     print_profile(profile, values)
 
     if not profile["is_code"] and not profile["ours"] and mode != "force":
-        print("Este repositorio no parece un proyecto Python con código y tests (no hay pyproject.toml,")
-        print("src/, tests/ ni paquetes). El arnés organiza el trabajo como features → spec → código →")
-        print("tests; en un repo de documentación o planificación solo añadiría ruido (docs/ de proceso,")
-        print("progress/, feature_list.json, reglas sobre src/ y tests/ que no existen).")
+        print("No encuentro un proyecto Python con código y tests (no hay pyproject.toml, src/, tests/")
+        print("ni paquetes). harness-kit está hecho para Python: corre pytest/unittest y sus hooks miran")
+        print("archivos .py. En un repo de documentación, en uno que aún no empieza el código o en otro")
+        print("stack (Node, .NET…) solo añadiría ruido: docs de proceso, progress/, feature_list.json y")
+        print("reglas sobre src/ y tests/ que no aplican. Tu CLAUDE.md/AGENTS.md se conservarían igual.")
         print("Si aun así lo quieres, repite con --force.")
         return 2
     if profile["foreign_signals"] and mode in ("install", "upgrade"):

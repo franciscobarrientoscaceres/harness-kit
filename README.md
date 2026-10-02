@@ -110,7 +110,7 @@ Al terminar ejecuta la verificación del arnés y te dice si quedó en verde.
 | `--adopt`         | Migra un arnés previo: reemplaza sus agentes, `CLAUDE.md`/`AGENTS.md` **solo si son de arnés**, `CHECKPOINTS.md`, `docs/verification.md`, retira `docs/specs.md` y los hooks antiguos. **Todo lo que reemplaza o retira queda en `.harness-backup/<fecha>/`** y se anota en `progress/history.md`. Conserva `feature_list.json`, specs, `progress/` y tus docs. |
 | `--upgrade`       | Actualiza un harness-kit ya instalado (validador, agentes, `docs/sdd.md`, ejemplo). No toca nada del proyecto. |
 | `--keep-existing` | Instala junto a un arnés previo sin tocarlo (tendrás que fusionar a mano). |
-| `--force`         | Sobrescribe todo (con backup). |
+| `--force`         | Sobrescribe todo (con backup), salvo tu `CLAUDE.md`/`AGENTS.md` propios, que siempre se conservan. También permite instalar en un repo sin código Python. |
 | `--dry-run`       | Muestra qué haría sin escribir nada. |
 
 ### Opciones de configuración

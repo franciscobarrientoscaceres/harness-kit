@@ -133,7 +133,7 @@ class TestNonCodeProject(InstallCase):
         before = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*"))
         code, output = self.install()
         self.assertEqual(code, 2)
-        self.assertIn("no parece un proyecto Python", output)
+        self.assertIn("No encuentro un proyecto Python", output)
         self.assertEqual(sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*")), before)
 
     def test_docs_repo_can_be_forced(self) -> None:
@@ -141,6 +141,16 @@ class TestNonCodeProject(InstallCase):
         code, _ = self.install("--force")
         self.assertEqual(code, 0)
         self.assertTrue((self.root / "harness.toml").exists())
+
+    def test_force_never_replaces_own_claude_md(self) -> None:
+        self.make_docs_repo()
+        self.write("CLAUDE.md", "# Guía propia\n\nReglas de confidencialidad.\n")
+        self.write("AGENTS.md", "# Mis agentes\n")
+        self.install("--force")
+        self.assertTrue(self.read("CLAUDE.md").startswith("# Guía propia\n\nReglas de confidencialidad.\n"))
+        self.assertIn("@CLAUDE.harness.md", self.read("CLAUDE.md"))
+        self.assertTrue(self.read("AGENTS.md").startswith("# Mis agentes\n"))
+        self.assertIn("Rol obligatorio: leader", self.read("CLAUDE.harness.md"))
 
 
 class TestExistingProjectFiles(InstallCase):
