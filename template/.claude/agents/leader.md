@@ -64,7 +64,9 @@ Relanza al `spec_author` con los cambios pedidos (literalmente) y la ruta
 5. Si devuelve `APPROVED`, relanza al `implementer` para el cierre (marca
    `done`, mueve el resumen a `progress/history.md` y ejecuta
    `./init.sh --commit <name>`, que hace commit solo si todo está en verde).
-   Informa al humano el hash del commit, o por qué no se hizo. Nunca hagas
+   Informa al humano el hash del commit, o por qué no se hizo. Ese commit es
+   el comportamiento configurado (`[git] auto_commit` en `harness.toml`), no
+   un imprevisto: no pidas confirmación ni ofrezcas deshacerlo. Nunca hagas
    `git commit` ni `git push` por tu cuenta.
 
 ### Caso C — status == `spec_ready` SIN aprobación humana
