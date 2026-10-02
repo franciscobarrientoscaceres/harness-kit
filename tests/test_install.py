@@ -34,6 +34,7 @@ class InstallCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        (self.root / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -107,17 +108,39 @@ class TestFreshInstall(InstallCase):
 
     def test_dry_run_writes_nothing(self) -> None:
         self.install("--dry-run")
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual([p.name for p in self.root.iterdir()], ["pyproject.toml"])
 
     def test_upgrade_requires_existing_install(self) -> None:
         code, output = self.install("--upgrade")
         self.assertEqual(code, 2)
-        self.assertEqual(list(self.root.iterdir()), [])
+        self.assertEqual([p.name for p in self.root.iterdir()], ["pyproject.toml"])
 
     def test_refuses_to_install_into_kit(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
             self.assertEqual(install.main([str(KIT), "--no-check"]), 1)
+
+
+class TestNonCodeProject(InstallCase):
+    def make_docs_repo(self) -> None:
+        (self.root / "pyproject.toml").unlink()
+        self.write("README.md", "# Plan\n")
+        self.write("docs/00_indice.md", "# Índice\n")
+        self.write("presentacion/herramientas/build_ppt.py", "print('ppt')\n")
+
+    def test_docs_repo_is_refused_without_changes(self) -> None:
+        self.make_docs_repo()
+        before = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*"))
+        code, output = self.install()
+        self.assertEqual(code, 2)
+        self.assertIn("no parece un proyecto Python", output)
+        self.assertEqual(sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*")), before)
+
+    def test_docs_repo_can_be_forced(self) -> None:
+        self.make_docs_repo()
+        code, _ = self.install("--force")
+        self.assertEqual(code, 0)
+        self.assertTrue((self.root / "harness.toml").exists())
 
 
 class TestExistingProjectFiles(InstallCase):

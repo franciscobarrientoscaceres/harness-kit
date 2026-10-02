@@ -47,6 +47,7 @@ class ProjectCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        (self.root / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
         with contextlib.redirect_stdout(io.StringIO()):
             install.main([str(self.root), "--name", "demo", "--python", "python", "--no-check"])
 

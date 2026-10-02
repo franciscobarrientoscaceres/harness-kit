@@ -136,6 +136,21 @@ def agent_description(path: Path) -> str:
     return match.group(1).strip() if match else ""
 
 
+def looks_like_code_project(target: Path) -> bool:
+    """¿Hay un proyecto Python con código y/o tests? (scripts sueltos de apoyo no cuentan)."""
+    if any((target / f).is_file() for f in ("pyproject.toml", "setup.py", "setup.cfg")):
+        return True
+    if (target / "src").is_dir() and any((target / "src").rglob("*.py")):
+        return True
+    for tests in ("tests", "test"):
+        if (target / tests).is_dir() and any((target / tests).rglob("test*.py")):
+            return True
+    return any(
+        p.is_dir() and (p / "__init__.py").is_file() and not p.name.startswith(".")
+        for p in target.iterdir()
+    )
+
+
 def inspect_project(target: Path) -> dict:
     harness_toml = target / "harness.toml"
     existing_config = checker.load_config(target) if harness_toml.is_file() else None
@@ -191,6 +206,7 @@ def inspect_project(target: Path) -> dict:
         "feature_list_state": fl_state,
         "legacy_hooks": legacy_hooks,
         "venv": venv,
+        "is_code": looks_like_code_project(target),
     }
 
 
@@ -562,6 +578,8 @@ def print_profile(profile: dict, values: dict[str, str]) -> None:
         print("  - GitHub spec-kit (.specify/ o specs/*/spec.md): los specs del arnés irán a .kiro/specs/")
     if profile["feature_list_state"] == "incompatible" and values["FEATURE_LIST"] != "feature_list.json":
         print(f"  - feature_list.json con otro formato: el arnés usará {values['FEATURE_LIST']}")
+    if not profile["is_code"]:
+        print("  - sin código Python (parece un repo de documentación o planificación)")
     if profile["venv"]:
         print(f"  - virtualenv {profile['venv']}/: los tests se ejecutarán con su intérprete")
     specialists = [a["name"] for a in profile["other_agents"] if not a["overlaps"]]
@@ -635,6 +653,13 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print_profile(profile, values)
 
+    if not profile["is_code"] and not profile["ours"] and mode != "force":
+        print("Este repositorio no parece un proyecto Python con código y tests (no hay pyproject.toml,")
+        print("src/, tests/ ni paquetes). El arnés organiza el trabajo como features → spec → código →")
+        print("tests; en un repo de documentación o planificación solo añadiría ruido (docs/ de proceso,")
+        print("progress/, feature_list.json, reglas sobre src/ y tests/ que no existen).")
+        print("Si aun así lo quieres, repite con --force.")
+        return 2
     if profile["foreign_signals"] and mode in ("install", "upgrade"):
         print("Este proyecto ya tiene otro arnés de agentes/SDD. Instalar encima dejaría dos juegos de")
         print("instrucciones contradictorias. Elige:")
