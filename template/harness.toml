@@ -23,8 +23,12 @@ test = "{{TEST_CMD}}"
 test_fast = ""
 
 [hooks]
-# Correr tests tras cada edición de un .py (desactívalo si la suite es muy lenta).
+# Correr tests tras cada edición de un .py.
 post_tests = true
+# "related": solo los tests del archivo editado (tests/**/test_<módulo>.py); la suite
+# completa corre en el hook Stop, y solo si cambió código desde el último verde.
+# "all": la suite completa en cada edición (o commands.test_fast si está definido).
+post_scope = "related"
 # Segundos máximos (deben ser menores que el "timeout" de .claude/settings.json).
 post_timeout = 150
 stop_timeout = 280

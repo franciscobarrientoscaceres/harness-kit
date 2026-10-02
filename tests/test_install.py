@@ -173,8 +173,16 @@ class TestExistingProjectFiles(InstallCase):
         self.write(".claude/agents/code-reviewer.md", "---\nname: code-reviewer\ndescription: Reviews code\n---\n")
         self.write(".claude/agents/translator.md", "---\nname: translator\ndescription: Traduce textos\n---\n")
         _, output = self.install()
-        self.assertIn("code-reviewer  ← posible solapamiento", output)
-        self.assertNotIn("translator  ←", output)
+        self.assertIn("code-reviewer  ← mismo rol", output)
+        self.assertIn("agentes especialistas del proyecto: translator", output)
+        self.assertNotIn("elimina", output)
+
+    def test_domain_specialists_are_not_flagged(self) -> None:
+        self.write(".claude/agents/database-optimizer.md",
+                   "---\nname: database-optimizer\ndescription: Usar para tests y planes de índices\n---\n")
+        _, output = self.install()
+        self.assertIn("especialistas del proyecto: database-optimizer", output)
+        self.assertNotIn("mismo rol", output)
 
     def test_upgrade_updates_kit_files_only(self) -> None:
         self.install()
@@ -258,6 +266,19 @@ class TestKiroAndSpecKit(InstallCase):
         self.assertEqual(by_name["billing"]["status"], "done")
         self.assertTrue(all(f["imported"] for f in by_name.values()))
         self.assertIn(".kiro/specs/<name>/", self.read(".claude/agents/spec_author.md"))
+
+    def test_started_kiro_spec_is_imported_in_progress(self) -> None:
+        self.add_kiro_spec("etl")
+        tasks = self.root / ".kiro" / "specs" / "etl" / "tasks.md"
+        tasks.write_text(tasks.read_text(encoding="utf-8").replace("- [ ] 1.1", "- [x] 1.1"), encoding="utf-8")
+        self.add_kiro_spec("otro")
+        tasks2 = self.root / ".kiro" / "specs" / "otro" / "tasks.md"
+        tasks2.write_text(tasks2.read_text(encoding="utf-8").replace("- [ ] 1.1", "- [x] 1.1"), encoding="utf-8")
+        code, output = self.install(check=True)
+        self.assertEqual(code, 0, output)
+        statuses = sorted(f["status"] for f in self.features())
+        self.assertEqual(statuses, ["in_progress", "spec_ready"])
+        self.assertIn("/12 tasks hechas", output)
 
     def test_kiro_import_is_idempotent(self) -> None:
         self.add_kiro_spec("user-auth")

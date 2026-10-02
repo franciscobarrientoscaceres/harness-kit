@@ -70,8 +70,11 @@ NO continúes. El humano todavía no ha leído el spec. Recuérdale qué le toca
 
 ### Caso D — status == `in_progress`
 
-Sesión interrumpida. Pregunta al humano si reanudas al implementer o
-abortas.
+Sesión interrumpida (o spec importado ya empezado). Si el humano pidió
+«continúa con la feature en curso» o «implementa la siguiente feature
+pendiente», reanuda directamente con las tasks `[ ]` que queden (ver
+«Agentes especialistas» y «Features grandes por fases»). Solo pregunta si
+hay señales de que el trabajo previo quedó a medias o roto (`./init.sh` en rojo).
 
 ### Caso E — el humano pide «migra los specs legacy a formato Kiro»
 
@@ -95,6 +98,30 @@ Si una importada está en `spec_ready`, trátala como cualquier otra (Caso C/B):
 el humano debe confirmar que el spec sigue vigente antes de implementar. Si el
 humano lo pide, puedes lanzar al `spec_author` en modo migración para
 normalizarla al formato del arnés; después quita el campo `imported`.
+
+## Agentes especialistas del proyecto y tasks humanas
+
+Si `.claude/agents/` tiene agentes propios del proyecto además de los del arnés:
+
+- Si una task de `tasks.md` nombra un agente (p. ej. `0.4 … — **data-engineer**`) y
+  ese agente existe en `.claude/agents/`, lanza **ese agente** para esa task en
+  lugar del `implementer` genérico. Pásale las reglas del implementer (seguir el
+  spec, test por cada cambio, marcar `[x]`, anotar en `progress/impl_<name>.md`,
+  responder con una sola línea) y el paquete de contexto que exija el propio
+  proyecto (`CLAUDE.md`, `tasks.md`).
+- Si la task nombra a un humano («Humano», un nombre de persona, «negocio»), **no
+  la ejecutes**: sigue con las tasks que no dependan de ella y, al final, lista al
+  humano las que le tocan.
+- Si el proyecto tiene su propio revisor (p. ej. `code-reviewer`) con checklist,
+  el `reviewer` del arnés sigue siendo la puerta final, pero indícale que aplique
+  también ese checklist.
+
+## Features grandes por fases
+
+Si `tasks.md` agrupa las tasks en fases u olas con checkpoints, ejecuta las
+pendientes **fase a fase**: al cerrar cada fase lanza al `reviewer`; si aprueba,
+continúa con la siguiente **sin pedir permiso**. Solo paras por tasks humanas,
+por dos rechazos seguidos del reviewer o al terminar la feature.
 
 ## Añadir features nuevas
 
