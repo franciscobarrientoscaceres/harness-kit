@@ -13,10 +13,7 @@ inclusion: always
 
 ```
 .
-├── {{SRC_DIR}}/          # Código de la aplicación
-│   └── ...               # _describe los módulos/paquetes principales_
-├── {{TESTS_DIR}}/        # Tests (un archivo por módulo)
-├── {{SPECS_DIR}}/<feature>/      # Specs Kiro-style por feature
+{{CODE_LAYOUT}}├── {{SPECS_DIR}}/<feature>/      # Specs Kiro-style por feature
 ├── progress/             # Estado de sesión y bitácora
 └── docs/                 # Arquitectura, convenciones, SDD, verificación
 ```

@@ -14,9 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -32,16 +34,19 @@ BASE_FILES = (
     "harness.toml",
     "progress/current.md",
     "progress/history.md",
-    "docs/architecture.md",
-    "docs/conventions.md",
-    "docs/sdd.md",
-    "docs/verification.md",
+    "docs/harness/proceso-sdd.md",
+    "docs/harness/verificacion.md",
 )
 STEERING_FILES = ("product.md", "tech.md", "structure.md")
 FILL_MARKER = "<!-- RELLENAR -->"
 NO_TESTS_EXIT_CODE = 5
 VENV_DIRS = (".venv", "venv", "env")
 CACHE_DIR = ".harness-cache"
+# Carpetas que nunca se recorren (dependencias, builds, caches).
+IGNORED_DIRS = {"node_modules", ".venv", "venv", "env", ".git", "dist", "build", "__pycache__",
+                ".pytest_cache", ".next", "coverage", ".harness-cache", ".harness-backup", "bin", "obj"}
+# Herramientas que se comprueban antes de lanzar un comando de tests.
+KNOWN_TOOLS = {"npm", "npx", "pnpm", "yarn", "node", "bun", "deno", "dotnet", "go", "cargo", "bicep", "az", "pwsh"}
 GREEN_STAMP = "last_green"
 
 DEFAULT_CONFIG = {
@@ -53,11 +58,15 @@ DEFAULT_CONFIG = {
         "feature_list": "feature_list.json",
         "progress_dir": "progress",
         "steering_dir": ".kiro/steering",
+        "architecture_doc": "docs/architecture.md",
+        "conventions_doc": "docs/conventions.md",
     },
     "commands": {"python": "", "test": "{python} -m pytest -q", "test_fast": ""},
-    "hooks": {"post_tests": True, "post_scope": "related", "post_timeout": 150, "stop_timeout": 280},
+    "hooks": {"post_tests": True, "post_scope": "related", "post_timeout": 150, "stop_timeout": 280,
+              "pre_gate": "warn"},
     "harness": {"min_python": "3.9"},
-    "git": {"auto_commit": True, "auto_push": False},
+    "git": {"auto_commit": True, "auto_push": False, "secret_scan": True},
+    "spec": {"format": "kiro", "tasks_dir": ""},
 }
 
 REQ_HEADING = re.compile(r"^###\s+(?:Requisito|Requirement)\s+(\d+)\b.*$", re.IGNORECASE | re.MULTILINE)
@@ -118,13 +127,37 @@ class Report:
 
 # ── Configuración ────────────────────────────────────────────────────────────
 
+def _parse_toml_value(value: str):
+    quoted = re.match(r'^"((?:[^"\\]|\\.)*)"', value)
+    if quoted:
+        return json.loads(f'"{quoted.group(1)}"')
+    if value.startswith("'"):
+        return value[1:value.index("'", 1)]
+    if value.startswith("["):
+        inner = value[1:value.rindex("]")] if "]" in value else value[1:]
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"|\'([^\']*)\'', inner)
+        return [json.loads(f'"{dq}"') if dq or not sq else sq for dq, sq in items]
+    bare = value.split("#", 1)[0].strip()
+    if bare in ("true", "false"):
+        return bare == "true"
+    try:
+        return int(bare)
+    except ValueError:
+        return value
+
+
 def _parse_toml_subset(text: str) -> dict:
-    """Parser mínimo para Python < 3.11: secciones, strings, bools e ints."""
+    """Parser mínimo para Python < 3.11: secciones, [[tablas]], strings, arrays, bools e ints."""
     data: dict = {}
     section = data
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
+            continue
+        table = re.match(r"^\[\[([\w\-]+)\]\]$", line)
+        if table:
+            section = {}
+            data.setdefault(table.group(1), []).append(section)
             continue
         header = re.match(r"^\[([\w.\-]+)\]$", line)
         if header:
@@ -135,19 +168,7 @@ def _parse_toml_subset(text: str) -> dict:
         pair = re.match(r"^([\w\-]+)\s*=\s*(.+)$", line)
         if not pair:
             continue
-        key, value = pair.group(1), pair.group(2).strip()
-        quoted = re.match(r'^"((?:[^"\\]|\\.)*)"', value)
-        if quoted:
-            section[key] = json.loads(f'"{quoted.group(1)}"')
-        elif value.startswith("'"):
-            section[key] = value[1:value.index("'", 1)]
-        elif value.split("#", 1)[0].strip() in ("true", "false"):
-            section[key] = value.split("#", 1)[0].strip() == "true"
-        else:
-            try:
-                section[key] = int(value.split("#", 1)[0].strip())
-            except ValueError:
-                section[key] = value
+        section[pair.group(1)] = _parse_toml_value(pair.group(2).strip())
     return data
 
 
@@ -380,6 +401,161 @@ def validate_legacy_spec(name: str, spec_dir: Path, status: str, report: Report)
             report.fail(f"{name}: feature `done` con tasks `[ ]` en tasks.md")
 
 
+# ── Formato SPEC-NNN (un archivo por spec: Estado, RF/RN/RNF, CA Dado/Cuando/Entonces) ──
+
+SPEC_STATES = ("Borrador", "En revisión", "Aprobada", "Rechazada", "Reemplazada")
+SPEC_CODE = re.compile(r"SPEC-(\d{3})", re.IGNORECASE)
+SPEC_FIELD = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$", re.MULTILINE)
+SPEC_ROW_ID = re.compile(r"^\|\s*((?:RF|RNF|RN)-(\d{3})-\d+)\s*\|(.*)$", re.MULTILINE)
+SPEC_CA = re.compile(r"^\*\*\s*(CA-(\d{3})-\d+)\b", re.MULTILINE)
+SPEC_REF = re.compile(r"^(?:RF|RNF|RN|CA)-\d{3}-\d+$")
+GHERKIN = (("dado", "given"), ("cuando", "when"), ("entonces", "then"))
+TEST_FILE = re.compile(r"(^test_.*\.py$|_test\.py$|\.(test|spec)\.[cm]?[jt]sx?$)", re.IGNORECASE)
+
+
+def parse_spec_nnn(text: str) -> dict:
+    fields = {}
+    for key, value in SPEC_FIELD.findall(text.split("\n## ", 1)[0]):
+        fields.setdefault(key.strip().lower(), value.strip())
+    estado_raw = fields.get("estado", "")
+    estado = next((s for s in SPEC_STATES if estado_raw.lower().startswith(s.lower())), "")
+    requirements = {}
+    for req_id, _num, rest in SPEC_ROW_ID.findall(text):
+        priority = next((p for p in ("Must", "Should", "Could") if re.search(rf"\b{p}\b", rest)), "")
+        requirements[req_id] = priority
+    criteria, criteria_refs = {}, {}
+    matches = list(SPEC_CA.finditer(text))
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        raw_block = text[match.end():end].split("\n## ", 1)[0]
+        block = raw_block.lower()
+        criteria[match.group(1)] = [pair[0] for pair in GHERKIN
+                                    if not any(re.search(rf"\b{w}\b", block) for w in pair)]
+        other = [ca for ca in re.findall(r"\bCA-\d{3}-\d+\b", raw_block) if ca != match.group(1)]
+        if other:
+            criteria_refs[match.group(1)] = other[0]  # «Igual que CA-001-05»
+    return {"estado": estado, "estado_raw": estado_raw, "fields": fields,
+            "requirements": requirements, "criteria": criteria, "criteria_refs": criteria_refs}
+
+
+def spec_tasks_path(root: Path, config: dict, spec_path: Path) -> Path:
+    tasks_dir = config["spec"].get("tasks_dir") or f"{config['paths']['specs_dir']}/tareas"
+    code = SPEC_CODE.search(spec_path.name)
+    stem = f"SPEC-{code.group(1)}" if code else spec_path.stem
+    return root / tasks_dir / f"{stem}-tareas.md"
+
+
+def _test_files(root: Path, config: dict) -> list[Path]:
+    files = []
+    for comp in get_components(config):
+        for base in _component_roots(root, comp):
+            for path in _walk_files(base, []):
+                if TEST_FILE.search(path.name) or {"tests", "__tests__", "e2e"} & set(path.parts):
+                    files.append(path)
+    return files
+
+
+def criteria_without_tests(root: Path, config: dict, criteria: list[str]) -> list[str]:
+    texts = []
+    for path in _test_files(root, config):
+        try:
+            texts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+    corpus = "\n".join(texts)
+    missing = []
+    for ca in criteria:
+        num = ca.split("-")[1:]
+        pattern = rf"CA[-_]?{num[0]}[-_]?{num[1]}(?!\d)"
+        if not re.search(pattern, corpus, re.IGNORECASE):
+            missing.append(ca)
+    return missing
+
+
+def validate_spec_nnn(feature: dict, root: Path, config: dict, report: Report) -> None:
+    name, status = feature["name"], feature["status"]
+    strict = status in ("in_progress", "done")
+    err = report.fail if strict else report.warn
+    rel = feature.get("spec", "")
+    spec_path = root / rel if rel else None
+    if not spec_path or not spec_path.is_file():
+        if status != "pending":
+            report.fail(f"{name}: no existe el spec «{rel}» indicado en el campo `spec`")
+        return
+    spec = parse_spec_nnn(spec_path.read_text(encoding="utf-8"))
+    code = SPEC_CODE.search(spec_path.name)
+    number = code.group(1) if code else ""
+
+    if not spec["estado"]:
+        err(f"{name}: Estado «{spec['estado_raw']}» no es uno de {', '.join(SPEC_STATES)}")
+    for req_id in spec["requirements"]:
+        if number and req_id.split("-")[1] != number:
+            err(f"{name}: {req_id} no corresponde a SPEC-{number}")
+    for ca, missing in spec["criteria"].items():
+        if number and ca.split("-")[1] != number:
+            err(f"{name}: {ca} no corresponde a SPEC-{number}")
+        required = [w for w in missing if w in ("dado", "entonces")]
+        if required and ca in spec["criteria_refs"]:
+            report.warn(f"{name}: {ca} remite a {spec['criteria_refs'][ca]} (sin Dado/Entonces propios)")
+        elif required:
+            err(f"{name}: {ca} no tiene {' ni '.join(w.capitalize() for w in required)}")
+        elif missing:
+            report.warn(f"{name}: {ca} sin «Cuando» (válido para invariantes; revisa que sea intencional)")
+    if not spec["criteria"]:
+        err(f"{name}: el spec no tiene criterios de aceptación `**CA-{number or 'NNN'}-NN**`")
+
+    if not strict:
+        return
+    # Puerta humana: no se implementa sin spec Aprobada (con fecha y aprobadores).
+    if spec["estado"] != "Aprobada":
+        report.fail(f"{name}: la feature está en {status} pero {spec_path.name} está «{spec['estado_raw']}»; "
+                    "el código no empieza hasta que la spec esté Aprobada")
+    else:
+        for field in ("fecha de aprobación", "aprobadores"):
+            if not spec["fields"].get(field):
+                report.fail(f"{name}: spec Aprobada sin «{field}» registrado")
+
+    tasks_path = spec_tasks_path(root, config, spec_path)
+    tasks_rel = tasks_path.relative_to(root).as_posix()
+    if not tasks_path.is_file():
+        report.fail(f"{name}: falta el plan de tareas {tasks_rel}")
+        return
+    tasks = parse_tasks(tasks_path.read_text(encoding="utf-8"))
+    if not tasks:
+        report.fail(f"{name}: {tasks_rel} no tiene tasks `- [ ] N. ...`")
+        return
+    known = set(spec["requirements"]) | set(spec["criteria"])
+    covered: set[str] = set()
+    for task in tasks:
+        refs = [tok.strip() for raw in task["refs_raw"] for tok in raw.split(",") if tok.strip()]
+        if task["leaf"] and not refs:
+            report.fail(f"{name}: task {task['id']} sin `_Requisitos: RF-…, CA-…_` (o `_Requisitos: ninguno_`)")
+        for ref in refs:
+            if SPEC_REF.match(ref):
+                if ref.split("-")[1] == number and ref not in known:
+                    report.fail(f"{name}: task {task['id']} referencia {ref}, que no existe en {spec_path.name}")
+                covered.add(ref)
+    for ca in spec["criteria"]:
+        if ca not in covered:
+            report.fail(f"{name}: {ca} no está cubierto por ninguna task de {tasks_rel}")
+    for req_id, priority in spec["requirements"].items():
+        if req_id not in covered:
+            if req_id.startswith("RF-") and priority in ("Must", ""):
+                report.fail(f"{name}: {req_id} (Must) no está cubierto por ninguna task")
+            else:
+                report.warn(f"{name}: {req_id} no está cubierto por ninguna task")
+
+    if status == "done":
+        pending = [t["id"] for t in tasks if not t["checked"] and not t["optional"]]
+        if pending:
+            report.fail(f"{name}: feature `done` con tasks sin marcar: {', '.join(pending)}")
+        for ca in criteria_without_tests(root, config, list(spec["criteria"])):
+            ref = spec["criteria_refs"].get(ca)
+            if ref and not criteria_without_tests(root, config, [ref]):
+                continue  # remite a otro criterio que sí tiene test
+            report.fail(f"{name}: ningún test cita {ca} (los tests deben nombrar el criterio que verifican)")
+
+
 # ── Trazabilidad criterio ↔ test ─────────────────────────────────────────────
 
 def _defined_tests(tests_dir: Path) -> set[str]:
@@ -434,7 +610,8 @@ def check_environment(config: dict, report: Report) -> None:
 
 def check_base_files(root: Path, config: dict, report: Report) -> None:
     report.section("2. Archivos base del arnés")
-    for rel in (*BASE_FILES, config["paths"]["feature_list"]):
+    project_docs = (config["paths"]["architecture_doc"], config["paths"]["conventions_doc"])
+    for rel in (*BASE_FILES, config["paths"]["feature_list"], *project_docs):
         if (root / rel).is_file():
             report.ok(f"Existe {rel}")
         else:
@@ -443,7 +620,7 @@ def check_base_files(root: Path, config: dict, report: Report) -> None:
     for fname in STEERING_FILES:
         if not (steering / fname).is_file():
             report.warn(f"Falta steering {(steering / fname).relative_to(root).as_posix()}")
-    to_fill = [steering / f for f in STEERING_FILES] + [root / "docs/architecture.md", root / "docs/conventions.md"]
+    to_fill = [steering / f for f in STEERING_FILES] + [root / d for d in project_docs]
     for path in to_fill:
         if path.is_file() and FILL_MARKER in path.read_text(encoding="utf-8"):
             report.warn(f"{path.relative_to(root).as_posix()} aún tiene secciones sin rellenar")
@@ -486,8 +663,15 @@ def check_features(root: Path, config: dict, report: Report) -> None:
     report.ok(f"{feature_list} leído ({len(features)} features)")
 
     specs_dir = root / config["paths"]["specs_dir"]
+    spec_nnn = config["spec"].get("format") == "spec-nnn"
     for feature in features:
         status = feature.get("status")
+        if spec_nnn and feature.get("sdd") and "spec" in feature:
+            failures_before = len(report.failures)
+            validate_spec_nnn(feature, root, config, report)
+            if status in REQUIRES_SPEC and len(report.failures) == failures_before:
+                report.ok(f"{feature['name']} ({status}): spec y tareas válidos")
+            continue
         if not feature.get("sdd") or status not in REQUIRES_SPEC:
             continue
         name = feature["name"]
@@ -539,39 +723,109 @@ def _has_module(python: str, module: str) -> bool:
     return result.returncode == 0
 
 
-def related_tests(root: Path, config: dict, edited: str) -> list[Path] | None:
-    """Tests relacionados con el archivo editado. None = no se sabe (correr todo); [] = ninguno."""
-    tests_dir = (root / config["paths"]["tests_dir"]).resolve()
+def get_components(config: dict) -> list[dict]:
+    """Componentes de código del proyecto. Sin `[[components]]`: un único componente Python."""
+    raw = config.get("components") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not raw:
+        return [{
+            "name": "python", "path": config["paths"]["src_dir"], "tests_dir": config["paths"]["tests_dir"],
+            "extensions": [".py"], "test": config["commands"]["test"],
+            "test_fast": config["commands"].get("test_fast", ""), "test_related": "", "python": True,
+        }]
+    components = []
+    for item in raw:
+        exts = item.get("extensions") or []
+        if isinstance(exts, str):
+            exts = [e.strip() for e in exts.split(",") if e.strip()]
+        test = str(item.get("test", ""))
+        components.append({
+            "name": str(item.get("name") or item.get("path") or "componente"),
+            "path": str(item.get("path", ".")).strip("/") or ".",
+            "tests_dir": str(item.get("tests_dir", "")).strip("/"),
+            "extensions": [e if e.startswith(".") else f".{e}" for e in exts],
+            "test": test,
+            "test_fast": str(item.get("test_fast", "")),
+            "test_related": str(item.get("test_related", "")),
+            "python": "{python}" in test,
+        })
+    return components
+
+
+def _walk_files(base: Path, extensions: list[str]):
+    """Archivos con esas extensiones bajo `base`, sin entrar en dependencias ni builds."""
+    if base.is_file():
+        if not extensions or base.suffix in extensions:
+            yield base
+        return
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        for name in filenames:
+            if not extensions or os.path.splitext(name)[1] in extensions:
+                yield Path(dirpath, name)
+
+
+def _component_roots(root: Path, comp: dict) -> list[Path]:
+    roots = [(root / comp["path"]).resolve()]
+    if comp["tests_dir"]:
+        roots.append((root / comp["tests_dir"]).resolve())
+    return roots
+
+
+def component_for(root: Path, components: list[dict], edited: str) -> dict | None:
+    """Componente al que pertenece el archivo editado (el de ruta más específica)."""
     try:
         path = Path(edited)
         path = (path if path.is_absolute() else root / path).resolve()
     except (OSError, ValueError):
         return None
-    if tests_dir in path.parents:
+    best, best_len = None, -1
+    for comp in components:
+        if comp["extensions"] and path.suffix not in comp["extensions"]:
+            continue
+        for base in _component_roots(root, comp):
+            if (path == base or base in path.parents) and len(str(base)) > best_len:
+                best, best_len = comp, len(str(base))
+    return best
+
+
+def _python_related(root: Path, src_dir: str, tests_dir: str, edited: str) -> list[Path] | None:
+    tests_path = (root / tests_dir).resolve()
+    try:
+        path = Path(edited)
+        path = (path if path.is_absolute() else root / path).resolve()
+    except (OSError, ValueError):
+        return None
+    if tests_path in path.parents:
         return [path] if path.name.startswith("test") else None
     # Primero el módulo; si no tiene tests propios, el paquete que lo contiene
     # (availability/motor.py → test_motor.py, si no test_availability.py).
     names = [] if path.stem == "__init__" else [path.stem]
-    src_dir = (root / config["paths"]["src_dir"]).resolve()
+    src_path = (root / src_dir).resolve()
     for parent in path.parents:
-        if parent in (src_dir, root.resolve()) or src_dir not in parent.parents:
+        if parent in (src_path, root.resolve()) or src_path not in parent.parents:
             break
         names.append(parent.name)
     for stem in names:
         found: set[Path] = set()
         for pattern in (f"test_{stem}.py", f"test_{stem}_*.py", f"{stem}_test.py"):
-            found.update(tests_dir.rglob(pattern))
+            found.update(tests_path.rglob(pattern))
         if found:
             return sorted(found)
     return []
 
 
+def related_tests(root: Path, config: dict, edited: str) -> list[Path] | None:
+    """Tests Python relacionados con el archivo editado. None = no se sabe; [] = ninguno."""
+    return _python_related(root, config["paths"]["src_dir"], config["paths"]["tests_dir"], edited)
+
+
 def _code_fingerprint(root: Path, config: dict) -> float:
     latest = 0.0
-    for rel in (config["paths"]["src_dir"], config["paths"]["tests_dir"]):
-        base = root / rel
-        if base.is_dir():
-            for path in base.rglob("*.py"):
+    for comp in get_components(config):
+        for base in _component_roots(root, comp):
+            for path in _walk_files(base, comp["extensions"]):
                 try:
                     latest = max(latest, path.stat().st_mtime)
                 except OSError:
@@ -608,23 +862,41 @@ def _targeted(command: str, targets: list[Path], root: Path) -> str:
     return command
 
 
-def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
-              fast: bool = False, timeout: int | None = None, targets: list[Path] | None = None) -> str:
-    report.section("4. Tests")
-    tests_dir = config["paths"]["tests_dir"]
-    if not (root / tests_dir).is_dir():
-        report.warn(f"La carpeta {tests_dir}/ no existe todavía")
-        return ""
-    command = (config["commands"].get("test_fast") if fast else "") or config["commands"]["test"]
+def _run_component(root: Path, config: dict, comp: dict, report: Report, quiet_output: bool, *,
+                   fast: bool, timeout: int | None, targets: list[Path] | None, label: str) -> tuple[str, bool]:
+    """Corre los tests de un componente. Devuelve (salida, ¿quedó en verde o sin tests?)."""
+    if comp["python"] and comp["tests_dir"]:
+        if not (root / comp["tests_dir"]).is_dir():
+            report.warn(f"{label}La carpeta {comp['tests_dir']}/ no existe todavía")
+            return "", True
+    elif not (root / comp["path"]).exists():
+        report.warn(f"{label}{comp['path']}/ aún no existe: sin tests que correr")
+        return "", True
+
+    command = (comp["test_fast"] if fast else "") or comp["test"]
+    files = ""
+    if targets and comp["test_related"] and not comp["python"]:
+        command = comp["test_related"]
+        base = (root / comp["path"]).resolve()
+        files = " ".join(_quote(os.path.relpath(t, base)) for t in targets)
+    if not command:
+        return "", True
+
     python = resolve_python(root, config)
     if "{python} -m pytest" in command and not _has_module(python, "pytest"):
         report.fail(
-            f"pytest no está instalado en {python}: instálalo (pip install pytest) "
-            "o ajusta commands.python / commands.test en harness.toml"
+            f"{label}pytest no está instalado en {python}: instálalo (pip install pytest) "
+            "o ajusta commands.python / el comando de tests en harness.toml"
         )
-        return ""
-    command = command.replace("{python}", _quote(python)).replace("{tests_dir}", tests_dir)
-    if targets:
+        return "", False
+    tool = command.split()[0] if command.split() else ""
+    if tool in KNOWN_TOOLS and shutil.which(tool) is None:
+        report.fail(f"{label}no encuentro `{tool}` en el PATH para correr: {command}")
+        return "", False
+
+    command = (command.replace("{python}", _quote(python)).replace("{tests_dir}", comp["tests_dir"])
+               .replace("{path}", comp["path"]).replace("{files}", files))
+    if targets and comp["python"]:
         command = _targeted(command, targets, root)
     try:
         proc = subprocess.run(
@@ -633,38 +905,57 @@ def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
         )
     except subprocess.TimeoutExpired:
         report.warn(
-            f"Los tests superaron {timeout}s y se cortaron; usa commands.test_fast o sube "
+            f"{label}Los tests superaron {timeout}s y se cortaron; usa test_fast o sube "
             "hooks.*_timeout en harness.toml"
         )
-        return ""
+        return "", True
     output = (proc.stdout + proc.stderr).strip()
     if not quiet_output and not report.quiet:
         print(output)
-    ran_nothing = proc.returncode == NO_TESTS_EXIT_CODE or re.search(r"\bRan 0 tests?\b", output)
-    has_test_files = any((root / tests_dir).rglob("test*.py")) or any((root / tests_dir).rglob("*_test.py"))
-    if ran_nothing and has_test_files:
-        report.fail(f"Hay archivos de test en {tests_dir}/ pero no se ejecutó ninguno: revisa commands.test ({command})")
-    elif ran_nothing:
-        report.warn("No se encontró ningún test")
-    elif proc.returncode == 0:
-        report.ok(f"Tests verdes ({command})")
-        if not targets:
-            mark_green(root, config)
-    else:
-        report.fail(f"Hay tests rotos ({command}, exit {proc.returncode})")
-    return output
+    if comp["python"]:
+        ran_nothing = proc.returncode == NO_TESTS_EXIT_CODE or re.search(r"\bRan 0 tests?\b", output)
+        tests_path = root / (comp["tests_dir"] or comp["path"])
+        has_test_files = any(tests_path.rglob("test*.py")) or any(tests_path.rglob("*_test.py"))
+        if ran_nothing and has_test_files:
+            report.fail(f"{label}Hay archivos de test en {comp['tests_dir']}/ pero no se ejecutó ninguno: "
+                        f"revisa el comando de tests ({command})")
+            return output, False
+        if ran_nothing:
+            report.warn(f"{label}No se encontró ningún test")
+            return output, True
+    if proc.returncode == 0:
+        report.ok(f"{label}Tests verdes ({command})")
+        return output, True
+    report.fail(f"{label}Hay tests rotos ({command}, exit {proc.returncode})")
+    return output, False
+
+
+def run_tests(root: Path, config: dict, report: Report, quiet_output: bool, *,
+              fast: bool = False, timeout: int | None = None, targets: list[Path] | None = None,
+              components: list[dict] | None = None) -> str:
+    report.section("4. Tests")
+    every = get_components(config)
+    selected = components if components is not None else every
+    multi = len(every) > 1
+    outputs, all_green = [], True
+    for comp in selected:
+        label = f"[{comp['name']}] " if multi else ""
+        output, green = _run_component(root, config, comp, report, quiet_output, fast=fast, timeout=timeout,
+                                       targets=targets, label=label)
+        outputs.append(output)
+        all_green = all_green and green
+    if all_green and not targets and components is None and not fast:
+        mark_green(root, config)
+    return "\n".join(o for o in outputs if o)
 
 
 # ── Modos de ejecución ───────────────────────────────────────────────────────
 
-def _edited_path() -> str | None:
-    """En modo hook post: ruta del .py editado ("" si no se sabe; None si no es un .py).
-
-    Claude Code envía el evento por stdin y lo cierra; si stdin es una terminal o
-    un pipe que nadie cierra (ejecución manual), no se bloquea: espera 2 s y sigue.
-    """
+def _read_hook_payload() -> dict:
+    """Evento del hook por stdin. Claude Code lo envía y cierra stdin; si stdin es una terminal
+    o un pipe que nadie cierra (ejecución manual), no se bloquea: espera 2 s y sigue."""
     if sys.stdin is None or sys.stdin.isatty():
-        return ""
+        return {}
     received: list[str] = []
     try:
         fd = sys.stdin.fileno()
@@ -688,14 +979,159 @@ def _edited_path() -> str | None:
     try:
         payload = json.loads(received[0] or "{}") if received else {}
     except (ValueError, OSError):
-        return ""
-    path = (payload.get("tool_input") or {}).get("file_path", "") or ""
-    return path if not path or path.endswith(".py") else None
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _edited_path(extensions: list[str] | None = None) -> str | None:
+    """Ruta del archivo de código editado ("" si no se sabe; None si no es código)."""
+    path = ((_read_hook_payload().get("tool_input") or {}).get("file_path", "")) or ""
+    extensions = extensions or [".py"]
+    return path if not path or Path(path).suffix in extensions else None
+
+
+def _inside_component(root: Path, components: list[dict], edited: str) -> bool:
+    try:
+        path = Path(edited)
+        path = (path if path.is_absolute() else root / path).resolve()
+    except (OSError, ValueError):
+        return False
+    return any(path == base or base in path.parents
+               for comp in components for base in _component_roots(root, comp)
+               if base != root.resolve())
+
+
+def implementation_allowed(root: Path, config: dict) -> bool:
+    """¿Hay una feature en curso cuya spec esté aprobada? (puerta humana del flujo SDD)."""
+    try:
+        data = json.loads((root / config["paths"]["feature_list"]).read_text(encoding="utf-8-sig"))
+        features = data["features"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    for feature in features:
+        if feature.get("status") != "in_progress":
+            continue
+        if config["spec"].get("format") != "spec-nnn" or "spec" not in feature:
+            return True  # en Kiro, in_progress ya implica spec aprobada
+        spec_path = root / feature["spec"]
+        if spec_path.is_file() and parse_spec_nnn(spec_path.read_text(encoding="utf-8"))["estado"] == "Aprobada":
+            return True
+    return False
+
+
+def pre_hook(root: Path, config: dict) -> int:
+    """Antes de editar código: avisa (o bloquea) si no hay una feature en curso con spec aprobada."""
+    mode = str(config["hooks"].get("pre_gate", "warn")).lower()
+    if mode == "off":
+        return 0
+    edited = ((_read_hook_payload().get("tool_input") or {}).get("file_path", "")) or ""
+    if not edited or not _inside_component(root, get_components(config), edited):
+        return 0
+    if implementation_allowed(root, config):
+        return 0
+    message = (f"[harness] Vas a editar {edited} sin una feature en curso con spec Aprobada. "
+               "El flujo SDD pide aprobar la spec antes de escribir código.")
+    if mode == "block":
+        print(message + " Edición bloqueada (hooks.pre_gate = \"block\").", file=sys.stderr)
+        return 2
+    print(message, file=sys.stderr)
+    return 1
+
+
+def post_hook(root: Path, config: dict) -> int:
+    hooks = config["hooks"]
+    components = get_components(config)
+    edited = _edited_path(sorted({e for c in components for e in c["extensions"]}) or None)
+    if not hooks.get("post_tests", True) or edited is None:
+        return 0
+    selected, targets = None, None
+    if edited:
+        comp = component_for(root, components, edited)
+        if comp is None:
+            return 0  # no pertenece a ningún componente de código
+        selected = [comp]
+        if hooks.get("post_scope", "related") == "related" and not comp["test_fast"]:
+            if comp["python"]:
+                targets = _python_related(root, comp["path"], comp["tests_dir"] or comp["path"], edited)
+                if targets == []:
+                    return 0  # sin tests relacionados: la suite completa corre en el hook Stop
+            elif comp["test_related"]:
+                targets = [Path(edited) if Path(edited).is_absolute() else root / edited]
+    report = Report(quiet=True)
+    output = run_tests(root, config, report, quiet_output=True, fast=True,
+                       timeout=int(hooks.get("post_timeout", 150)), targets=targets, components=selected)
+    if report.failures:
+        tail = "\n".join(output.splitlines()[-15:])
+        print(f"[harness] tests en rojo tras la edición:\n{tail}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8",
                           errors="replace", stdin=subprocess.DEVNULL)
+
+
+SECRET_PATTERNS = (
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"), "clave privada"),
+    (re.compile(r"AccountKey=[A-Za-z0-9+/=]{20,}"), "clave de cuenta de Azure Storage"),
+    (re.compile(r"(?:SharedAccessSignature=|[?&]sig=)[A-Za-z0-9%+/=]{20,}"), "firma SAS de Azure"),
+    (re.compile(r"(?i)(?:^|[;\"'])\s*(?:password|pwd)=[^;'\"\s]{4,}"), "contraseña en cadena de conexión"),
+    (re.compile(r"(?i)(?:client[_-]?secret|api[_-]?key|secret|access[_-]?token)\w*['\"]?\s*[:=]\s*['\"]"
+                r"(?P<value>[A-Za-z0-9_\-.~+/=]{16,})['\"]"),
+     "secreto o token en el código"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "clave de AWS"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "token de GitHub"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}"), "API key de Anthropic"),
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "token de Slack"),
+)
+SAFE_ENV_SUFFIXES = (".example", ".sample", ".template", ".dist")
+# Valores claramente ficticios (fixtures de test) que no se tratan como secretos.
+PLACEHOLDER_WORDS = re.compile(r"(?i)test|prueba|fake|dummy|example|ejemplo|mock|sample|placeholder|changeme|xxx")
+
+
+def _looks_random(value: str) -> bool:
+    """Un secreto real es aleatorio: mezcla de clases de caracteres y alta entropía."""
+    if PLACEHOLDER_WORDS.search(value):
+        return False
+    classes = sum(bool(re.search(p, value)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[^A-Za-z0-9]"))
+    counts = {c: value.count(c) for c in set(value)}
+    entropy = -sum(n / len(value) * math.log2(n / len(value)) for n in counts.values())
+    return classes >= 3 and entropy >= 3.5
+FORBIDDEN_EXTENSIONS = (".pbix", ".pfx", ".pem", ".key", ".p12")
+
+
+def _forbidden_file(rel: str) -> str:
+    name = rel.rsplit("/", 1)[-1].lower()
+    if name == ".env" or (name.startswith(".env.") and not name.endswith(SAFE_ENV_SUFFIXES)):
+        return "archivo .env"
+    if name.endswith(FORBIDDEN_EXTENSIONS):
+        return f"archivo {name.rsplit('.', 1)[-1]}"
+    return ""
+
+
+def scan_staged_secrets(root: Path) -> list[str]:
+    """Problemas en lo que está en stage: `ruta:línea — tipo` (nunca muestra el secreto)."""
+    findings = []
+    for rel in _git(root, "diff", "--cached", "--name-only", "--diff-filter=ACMR").stdout.splitlines():
+        kind = _forbidden_file(rel)
+        if kind:
+            findings.append(f"{rel} — {kind} (no se versiona)")
+    current, line_no = "", 0
+    for line in _git(root, "diff", "--cached", "-U0", "--diff-filter=ACMR").stdout.splitlines():
+        if line.startswith("+++ "):
+            current = line[6:] if line.startswith("+++ b/") else line[4:]
+        elif line.startswith("@@"):
+            match = re.search(r"\+(\d+)", line)
+            line_no = int(match.group(1)) if match else 0
+        elif line.startswith("+") and not line.startswith("+++"):
+            for pattern, kind in SECRET_PATTERNS:
+                match = pattern.search(line[1:])
+                if match and ("value" not in pattern.groupindex or _looks_random(match.group("value"))):
+                    findings.append(f"{current}:{line_no} — {kind}")
+                    break
+            line_no += 1
+    return findings
 
 
 def commit_feature(root: Path, config: dict, name: str, verbose: bool = False) -> int:
@@ -738,11 +1174,20 @@ def commit_feature(root: Path, config: dict, name: str, verbose: bool = False) -
         return 1
 
     _git(root, "add", "-A")
+    if git_config.get("secret_scan", True):
+        findings = scan_staged_secrets(root)
+        if findings:
+            _git(root, "reset", "-q")
+            print("[FAIL]  Posibles secretos o archivos prohibidos en el commit: NO se hace commit.")
+            for finding in findings:
+                print(f"          - {finding}")
+            print("        Quítalos (o agrégalos a .gitignore) y vuelve a ejecutar --commit.")
+            return 1
     if _git(root, "diff", "--cached", "--quiet").returncode == 0:
         print("[OK]    Todo en verde y no hay cambios pendientes: nada que commitear.")
         return 0
     title = feature.get("title") or name
-    spec = f"{config['paths']['specs_dir']}/{name}/"
+    spec = feature.get("spec") or f"{config['paths']['specs_dir']}/{name}/"
     message = (f"{name}: {title}\n\nFeature #{feature.get('id')} cerrada por el arnés SDD "
                f"(reviewer APPROVED, verificación y tests en verde).\n"
                f"Spec: {spec}\nTrazabilidad: progress/impl_{name}.md\nReview: progress/review_{name}.md\n")
@@ -773,7 +1218,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent.parent))
     parser.add_argument("--no-tests", action="store_true", help="no ejecutar los tests")
     parser.add_argument("--tests-only", action="store_true", help="solo ejecutar los tests")
-    parser.add_argument("--hook", choices=("post", "stop"), help="modo hook de Claude Code")
+    parser.add_argument("--hook", choices=("pre", "post", "stop"), help="modo hook de Claude Code")
     parser.add_argument("--verbose", action="store_true", help="detalle completo de specs importados")
     parser.add_argument("--commit", metavar="FEATURE",
                         help="commit de una feature done si y solo si toda la verificación (con tests) pasa")
@@ -786,22 +1231,9 @@ def main(argv: list[str] | None = None) -> int:
 
     hooks = config["hooks"]
     if args.hook == "post":
-        edited = _edited_path()
-        if not hooks.get("post_tests", True) or edited is None:
-            return 0
-        targets = None
-        if edited and hooks.get("post_scope", "related") == "related" and not config["commands"].get("test_fast"):
-            targets = related_tests(root, config, edited)
-            if targets == []:
-                return 0  # sin tests relacionados: la suite completa corre en el hook Stop
-        report = Report(quiet=True)
-        output = run_tests(root, config, report, quiet_output=True, fast=True,
-                           timeout=int(hooks.get("post_timeout", 150)), targets=targets)
-        if report.failures:
-            tail = "\n".join(output.splitlines()[-15:])
-            print(f"[harness] tests en rojo tras la edición:\n{tail}", file=sys.stderr)
-            return 2
-        return 0
+        return post_hook(root, config)
+    if args.hook == "pre":
+        return pre_hook(root, config)
 
     report = Report(quiet=args.hook == "stop", verbose=args.verbose)
     if not args.tests_only:

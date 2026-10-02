@@ -11,7 +11,7 @@ cambios. No editas código.
 
 ## Protocolo
 
-1. Lee `docs/architecture.md`, `docs/conventions.md`, `docs/sdd.md`,
+1. Lee `{{ARCH_DOC}}`, `{{CONV_DOC}}`, `docs/harness/proceso-sdd.md`,
    `.kiro/steering/*.md`, `CHECKPOINTS.md` y `harness.toml`.
 2. Identifica la feature en curso (la única en `in_progress` en
    `{{FEATURE_LIST}}`) y abre `{{SPECS_DIR}}/<name>/` y `progress/impl_<name>.md`.
@@ -19,13 +19,18 @@ cambios. No editas código.
    el test que lo verifica (según el mapa de `impl_<name>.md`) y **léelo**:
    confirma que de verdad comprueba lo que dice el criterio (no solo que
    exista). Si falta o no lo verifica, rechaza.
+   **Formato spec-nnn:** los criterios son los `CA-NNN-xx` del SPEC
+   (`{{SPECS_DIR}}/SPEC-NNN-*.md`) y las tasks están en
+   `{{TASKS_DIR}}/SPEC-NNN-tareas.md`. Verifica también que el SPEC siga en
+   `Aprobada` y que cada `RF` *Must* esté implementado. Si el proyecto tiene una
+   «Definition of Done» (p. ej. en `{{CONV_DOC}}`), aplícala como checklist.
 4. **Tasks completas**: todas las tasks no opcionales de `tasks.md` están
    `[x]`. Si queda alguna `[ ]`, rechaza.
 5. **Diseño**: el código sigue `design.md` (archivos, firmas, errores). Si se
    desvía, rechaza salvo justificación en `impl_<name>.md`.
 6. Para cada archivo modificado revisa:
-   - ¿Respeta `docs/architecture.md` y `.kiro/steering/structure.md`?
-   - ¿Respeta `docs/conventions.md`?
+   - ¿Respeta `{{ARCH_DOC}}` y `.kiro/steering/structure.md`?
+   - ¿Respeta `{{CONV_DOC}}`?
    - ¿Tiene su test correspondiente?
    - ¿Añade dependencias no permitidas en `.kiro/steering/tech.md`?
 7. Ejecuta `./init.sh` (o `./init.ps1`). Tiene que terminar verde.

@@ -17,7 +17,7 @@ independiente comprueba que cada criterio tiene su test.
 |-------------------------------------|----------------------------------------------------------------------------------|
 | **1. El repositorio ES el sistema** | `AGENTS.md`, `feature_list.json`, `progress/`, `harness.toml`, `init.sh`/`init.ps1` |
 | **2. Orquestación multi-agente**    | `.claude/agents/{leader,spec_author,implementer,reviewer}.md` + `CLAUDE.md`      |
-| **3. Spec Driven Development**      | `docs/sdd.md`, `docs/spec-example/`, `.kiro/steering/`, puerta de aprobación humana |
+| **3. Spec Driven Development**      | `docs/harness/proceso-sdd.md`, `docs/harness/ejemplo-spec/`, `.kiro/steering/`, puerta de aprobación humana |
 | **4. Supervisión y mejora**         | `tools/harness_check.py`, hooks en `.claude/settings.json`, `CHECKPOINTS.md`     |
 
 ## Flujo
@@ -67,10 +67,55 @@ datos, Manejo de errores, Estrategia de testing, Alternativas descartadas.
   - _Requisitos: ninguno_
 ```
 
-Ejemplo completo en [`template/docs/spec-example/`](template/docs/spec-example/).
+Ejemplo completo en [`template/docs/harness/ejemplo-spec/`](template/docs/harness/ejemplo-spec/).
 También se acepta la variante en inglés de Kiro (`Requirement`, `User Story`,
 `Acceptance Criteria`, `SHALL`). El contexto permanente va en los *steering
 files* `.kiro/steering/{product,tech,structure}.md`, igual que en Kiro.
+
+## Formato de spec SPEC-NNN (alternativo)
+
+Si el proyecto ya escribe sus specs como `SPEC-NNN-*.md` de un solo archivo
+(cabecera con `Estado`, requisitos `RF/RN/RNF-NNN-xx`, criterios `CA-NNN-xx` en
+**Dado / Cuando / Entonces**), el kit lo detecta y **no** lo convierte a Kiro:
+
+- El SPEC es lo que el equipo aprueba; la **puerta humana es su `Estado`**.
+  Solo el humano lo declara `Aprobada` (con fecha y aprobadores).
+- Con el SPEC aprobado, el `spec_author` genera el plan de tareas
+  (`docs/specs/tareas/SPEC-NNN-tareas.md`, con `_Requisitos: RF-…, CA-…_`) y se
+  implementa sin más pausas.
+- `./init.sh` **falla** si una feature en curso tiene su SPEC sin aprobar, si el
+  plan no cubre todos los `CA` y `RF` *Must*, o si al cerrar algún `CA` no está
+  citado en un test (`it("CA-002-03: …")`, `test_ca_002_03_…`). Un `CA` que
+  remite a otro («Igual que CA-001-05») se acepta.
+
+Detalle en `docs/harness/proceso-sdd.md` del proyecto instalado.
+
+## Proyectos multi-stack (componentes)
+
+Sin configuración, el proyecto es Python (`src/` + `tests/`). Para otros stacks
+o monorepos, cada carpeta de código se declara como componente en `harness.toml`:
+
+```toml
+[[components]]
+name = "api"
+path = "api"
+extensions = [".js", ".ts"]
+test = "npm --prefix api test --silent"
+test_related = "npm --prefix api exec -- vitest related {files} --run"   # opcional
+
+[[components]]
+name = "sql"
+path = "sql"
+extensions = [".sql"]          # sin `test`: se vigila pero no tiene suite
+```
+
+- El instalador crea un componente por cada `package.json` (detecta Vitest/Jest
+  para `test_related`), o se pasan con `--component nombre=ruta:.ext,.ext:comando`.
+- `./init.sh` corre la suite de cada componente; un componente cuya carpeta aún
+  no existe es un aviso, no un error (proyectos en fase de especificación).
+- El hook tras cada edición corre solo los tests del componente editado (o los
+  relacionados, si hay `test_related`); el recorrido ignora `node_modules/`,
+  `.venv/`, `dist/`, etc.
 
 ## Instalación en un proyecto
 
@@ -98,6 +143,10 @@ consecuencia. Siempre puedes ver qué haría antes con `--dry-run`.
 | `feature_list.json` con **otro formato** (p. ej. el array de *long-running agents*) | No lo toca; el arnés usa `sdd_features.json`. |
 | Agentes propios con roles parecidos (`code-reviewer`, `planner`…) | Te avisa de posible solapamiento. |
 | Virtualenv (`.venv/`, `venv/`, `env/`) | Los tests se ejecutan con su intérprete. |
+| Specs `SPEC-NNN-*.md` con campo `Estado` | Formato `spec-nnn`: importa cada SPEC como feature `pending` y usa su carpeta. Un repo en fase de especificación se acepta aunque aún no tenga código. |
+| `package.json` (raíz o subcarpetas) | Un componente Node por cada uno, con `npm test`. |
+| `docs/SDD.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`… | Los usa como documento de arquitectura/convenciones en vez de crear los suyos. |
+| Repo sin código Python ni specs (documentación, presentaciones) | Se detiene y lo explica; `--force` para instalar igual. |
 | `docs/architecture.md`, `docs/conventions.md`… propios | Se conservan (son contenido del proyecto). |
 
 Al terminar ejecuta la verificación del arnés y te dice si quedó en verde.
@@ -107,8 +156,8 @@ Al terminar ejecuta la verificación del arnés y te dice si quedó en verde.
 | Flag              | Para qué |
 |-------------------|----------|
 | *(ninguno)*       | Instalación segura: no pisa nada. |
-| `--adopt`         | Migra un arnés previo: reemplaza sus agentes, `CLAUDE.md`/`AGENTS.md` **solo si son de arnés**, `CHECKPOINTS.md`, `docs/verification.md`, retira `docs/specs.md` y los hooks antiguos. **Todo lo que reemplaza o retira queda en `.harness-backup/<fecha>/`** y se anota en `progress/history.md`. Conserva `feature_list.json`, specs, `progress/` y tus docs. |
-| `--upgrade`       | Actualiza un harness-kit ya instalado (validador, agentes, `docs/sdd.md`, ejemplo). No toca nada del proyecto. |
+| `--adopt`         | Migra un arnés previo: reemplaza sus agentes, `CLAUDE.md`/`AGENTS.md` **solo si son de arnés**, `CHECKPOINTS.md`, `docs/harness/verificacion.md`, retira `docs/specs.md` y los hooks antiguos. **Todo lo que reemplaza o retira queda en `.harness-backup/<fecha>/`** y se anota en `progress/history.md`. Conserva `feature_list.json`, specs, `progress/` y tus docs. |
+| `--upgrade`       | Actualiza un harness-kit ya instalado (validador, agentes, `docs/harness/proceso-sdd.md`, ejemplo). No toca nada del proyecto. |
 | `--keep-existing` | Instala junto a un arnés previo sin tocarlo (tendrás que fusionar a mano). |
 | `--force`         | Sobrescribe todo (con backup), salvo tu `CLAUDE.md`/`AGENTS.md` propios, que siempre se conservan. También permite instalar en un repo sin código Python. |
 | `--dry-run`       | Muestra qué haría sin escribir nada. |
@@ -123,6 +172,9 @@ Al terminar ejecuta la verificación del arnés y te dice si quedó en verde.
 | `--specs-dir DIR`  | `specs/` (o `.kiro/specs/` si hay Kiro o spec-kit) |
 | `--feature-list F` | `feature_list.json` (o `sdd_features.json` si el existente es de otro formato) |
 | `--test-cmd CMD`   | pytest o unittest según detecte; admite `{python}` y `{tests_dir}` |
+| `--spec-format F`  | `kiro` o `spec-nnn` (autodetectado) |
+| `--component C`    | `nombre=ruta:.ext,.ext:comando de tests`, repetible (autodetectado desde `package.json`) |
+| `--architecture-doc D` / `--conventions-doc D` | Documentos del proyecto que los agentes usan como estándar (nunca se modifican) |
 | `--no-check`       | No ejecutar la verificación final |
 
 En una reinstalación los valores se leen del `harness.toml` existente, así que
@@ -173,6 +225,11 @@ verde. Si algo falla, no hay commit y el motivo queda en
   auto_push = false    # true = push tras el commit (desactivado: es irreversible)
   ```
 - Si el proyecto no es un repo git, simplemente no hace nada.
+- **Escáner de secretos** (`[git] secret_scan = true`): antes de commitear
+  revisa lo que entra al commit. Si encuentra claves privadas, `AccountKey`,
+  firmas SAS, contraseñas en cadenas de conexión, tokens (GitHub, Anthropic,
+  AWS, Slack) o archivos `.env`/`.pbix`/`.pfx`/`.pem`, **no commitea** y dice
+  `archivo:línea — tipo` sin mostrar el secreto. `.env.example` sí se permite.
 
 ## Qué valida `tools/harness_check.py`
 
@@ -202,6 +259,9 @@ features importadas (`"imported": true`).
 **Hooks** (`.claude/settings.json`), invocados como `bash init.sh --hook …`
 para que el mismo archivo funcione en Windows (Git Bash), macOS y Linux:
 
+- `PreToolUse` antes de editar código de un componente: si no hay una feature
+  en curso con spec aprobada, **avisa** (`hooks.pre_gate = "warn"`), o
+  **bloquea** la edición con `"block"`; `"off"` lo desactiva.
 - `PostToolUse` tras editar un `.py`: corre los tests (o `commands.test_fast`);
   si fallan devuelve exit 2 y Claude Code le pasa el error al modelo para que
   lo arregle. Se puede desactivar con `hooks.post_tests = false`.
@@ -221,6 +281,10 @@ mejorar el kit en un solo sitio y propagar cambios con `--upgrade`.
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+Los documentos de proceso del arnés se instalan en `docs/harness/`
+(`proceso-sdd.md`, `verificacion.md`, `ejemplo-spec/`), separados de la
+documentación propia de cada proyecto.
 
 ```
 harness-kit/

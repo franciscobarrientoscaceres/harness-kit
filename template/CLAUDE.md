@@ -11,19 +11,41 @@ implementar.
 
 ### Reglas duras
 
-- ❌ **No edites** archivos en `{{SRC_DIR}}/` ni `{{TESTS_DIR}}/` directamente (ni con Edit,
-  ni con Write, ni con Bash).
+- ❌ **No edites** código ni tests ({{CODE_DIRS}}) directamente (ni con Edit, ni con
+  Write, ni con Bash).
 - ❌ **No marques** features como `done` en `{{FEATURE_LIST}}`.
+{{#kiro}}
 - ❌ **No saltes la fase de spec.** Toda feature con `"sdd": true` debe
   pasar por `spec_author` antes de cualquier implementación.
 - ❌ **No saltes la puerta de aprobación humana** entre `spec_ready` e
   `in_progress`. Cuando una feature llega a `spec_ready`, paras y le
   pides al humano que apruebe o pida cambios.
+{{/kiro}}
+{{#spec-nnn}}
+- ❌ **La spec de cada feature es su SPEC** (campo `"spec"` de `{{FEATURE_LIST}}`,
+  p. ej. `{{SPECS_DIR}}/SPEC-002-*.md`). **No crees specs Kiro**
+  (`requirements.md`/`design.md`/`tasks.md`) para ellas.
+- ❌ **No implementes una SPEC que no esté `Aprobada`.** Si te piden «implementa
+  la siguiente feature pendiente» y su SPEC está en `Borrador` o `En revisión`,
+  no lances agentes de código: di qué SPEC espera aprobación y ofrece pulirla.
+- ❌ **Solo el humano aprueba.** Registra `Estado = Aprobada`, la fecha y los
+  aprobadores en la SPEC únicamente cuando el humano diga quién aprobó y cuándo.
+- ✅ Con la SPEC `Aprobada`: el `spec_author` genera
+  `{{TASKS_DIR}}/SPEC-NNN-tareas.md` y pasas la feature a `in_progress` **sin otra
+  pausa** (la aprobación ya ocurrió sobre la SPEC). Detalle: sección «Formato
+  spec-nnn» de `.claude/agents/leader.md`.
+{{/spec-nnn}}
 - ✅ Para cualquier tarea de código, lanza el subagente apropiado vía la
   herramienta `Agent`:
+{{#kiro}}
   - `subagent_type: "spec_author"` → redacta
     `{{SPECS_DIR}}/<name>/{requirements,design,tasks}.md` (Kiro-style) para una feature
     `pending` con `"sdd": true`.
+{{/kiro}}
+{{#spec-nnn}}
+  - `subagent_type: "spec_author"` → pule una SPEC sin aprobarla, o genera el
+    plan de tareas `{{TASKS_DIR}}/SPEC-NNN-tareas.md` de una SPEC `Aprobada`.
+{{/spec-nnn}}
   - `subagent_type: "implementer"` → escribe código y tests de **una**
     feature ya con spec aprobado (`in_progress`).
   - `subagent_type: "reviewer"` → valida trazabilidad y tasks antes de cerrar.
@@ -48,8 +70,8 @@ para el patrón completo.
 
 - Preguntas conceptuales o de exploración del repo (lectura pura) → responde
   tú directamente, sin lanzar subagentes.
-- Cambios fuera de `{{SRC_DIR}}/` y `{{TESTS_DIR}}/` (docs, configuración, `progress/`,
-  `{{FEATURE_LIST}}` para añadir features nuevas, `.kiro/steering/`) → puedes
+- Cambios fuera del código ({{CODE_DIRS}}): docs, configuración, `progress/`,
+  `{{FEATURE_LIST}}` para añadir features nuevas, `.kiro/steering/` → puedes
   editar tú mismo.
 - Si el humano pide explícitamente saltarse el arnés para un cambio puntual,
   confirma una vez y obedece; anótalo en `progress/current.md`.

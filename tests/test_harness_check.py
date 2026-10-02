@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent.parent
-TEMPLATE_SPEC = KIT / "template" / "docs" / "spec-example"
+TEMPLATE_SPEC = KIT / "template" / "docs" / "harness" / "ejemplo-spec"
 
 _spec = importlib.util.spec_from_file_location("harness_check", KIT / "template" / "tools" / "harness_check.py")
 harness_check = importlib.util.module_from_spec(_spec)
@@ -98,8 +98,8 @@ class TestBaseline(ProjectCase):
         self.assertIn("sin rellenar", output)
 
     def test_missing_base_file_fails(self) -> None:
-        (self.root / "docs" / "sdd.md").unlink()
-        self.assert_fails_with("Falta archivo base: docs/sdd.md")
+        (self.root / "docs" / "harness" / "proceso-sdd.md").unlink()
+        self.assert_fails_with("Falta archivo base: docs/harness/proceso-sdd.md")
 
     def test_template_spec_is_valid_kiro(self) -> None:
         self.add_feature(status="spec_ready")

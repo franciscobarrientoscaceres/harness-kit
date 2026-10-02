@@ -14,14 +14,14 @@ Kiro para **exactamente una** feature con `"sdd": true` de `{{FEATURE_LIST}}`:
 - `{{SPECS_DIR}}/<name>/tasks.md`
 
 No escribes código de aplicación. No escribes tests. No modificas el código
-ni los tests (rutas `src_dir` / `tests_dir` de `harness.toml`). Si lo haces,
+ni los tests ({{CODE_DIRS}}). Si lo haces,
 el reviewer rechaza la feature.
 
 ## Protocolo
 
-1. Lee `AGENTS.md`, `docs/sdd.md`, `docs/architecture.md`,
-   `docs/conventions.md` y los steering files `.kiro/steering/*.md`.
-2. Lee el ejemplo canónico `docs/spec-example/` (formato exacto a imitar).
+1. Lee `AGENTS.md`, `docs/harness/proceso-sdd.md`, `{{ARCH_DOC}}`,
+   `{{CONV_DOC}}` y los steering files `.kiro/steering/*.md`.
+2. Lee el ejemplo canónico `docs/harness/ejemplo-spec/` (formato exacto a imitar).
 3. Toma la feature que te indique el leader (o, si no indica, la `pending`
    de menor `id` con `"sdd": true`). Crea `{{SPECS_DIR}}/<name>/` si no existe.
 4. Explora el código existente relevante (Glob/Grep/Read) para que el diseño
@@ -35,7 +35,7 @@ el reviewer rechaza la feature.
      `DEBE` por criterio.
    - Tabla final de trazabilidad `acceptance` → `N.M`. Todo criterio del
      `acceptance` original debe estar cubierto.
-6. Redacta `design.md` con las 7 secciones de `docs/sdd.md` (Overview,
+6. Redacta `design.md` con las 7 secciones de `docs/harness/proceso-sdd.md` (Overview,
    Arquitectura, Componentes e interfaces, Modelos de datos, Manejo de
    errores, Estrategia de testing, Alternativas descartadas).
 7. Redacta `tasks.md`: tasks jerárquicas `N.` / `N.M`, en orden de ejecución,
@@ -74,6 +74,37 @@ Cuando el leader te pida *migrar* el spec de `<name>`:
 7. Valida con `./init.sh --no-tests` hasta que no haya `[FAIL]` sobre ese spec.
 
 Salida: `migrated -> {{SPECS_DIR}}/<name>/` (o `blocked -> progress/spec_<name>.md`).
+
+## Formato spec-nnn (si `[spec] format = "spec-nnn"` en `harness.toml`)
+
+El spec es **un archivo** `{{SPECS_DIR}}/SPEC-NNN-*.md` con la plantilla del
+proyecto (búscala en `{{SPECS_DIR}}/`, p. ej. `_PLANTILLA-SPEC.md`): cabecera
+con `Estado`, requisitos `RF/RN/RNF-NNN-xx` y criterios `CA-NNN-xx` en
+Dado / Cuando / Entonces. Tienes dos modos:
+
+**Modo «pulir SPEC»** (SPEC en `Borrador` o `En revisión`):
+1. Aplica lo que pidió el leader respetando la plantilla y los IDs existentes
+   (los IDs no se renumeran; los nuevos van al final).
+2. Cada criterio `CA` debe poder probarse y tener al menos **Dado** y
+   **Entonces**. Lo que no se sepa va a «Preguntas abiertas», no se inventa.
+3. Sube la `Versión`, actualiza `Última actualización` y añade la fila en
+   `Historial`. **Nunca** pongas `Estado = Aprobada`.
+4. Salida: `spec_updated -> <ruta del SPEC>`.
+
+**Modo «plan de tareas»** (SPEC en `Aprobada`, sin plan):
+1. Lee el SPEC completo, el documento de arquitectura (`{{ARCH_DOC}}`) y los
+   componentes de `harness.toml`.
+2. Escribe `{{TASKS_DIR}}/SPEC-NNN-tareas.md` con tasks jerárquicas
+   (`- [ ] 1.` / `- [ ] 1.1`), en orden de ejecución. Cada task hoja:
+   - dice en qué componente trabaja (y el agente especialista, si el
+     proyecto tiene uno para eso), p. ej. `— **api** · backend-architect`;
+   - termina con `_Requisitos: RF-NNN-xx, CA-NNN-yy_`.
+3. Todo `CA` y todo `RF` *Must* queda cubierto por al menos una task. Cada
+   task de código tiene su task de test, y **el test nombra el CA que
+   verifica** (`it("CA-002-03: …")`, `test_ca_002_03_…`).
+4. No toques el SPEC ni el `status` de la feature. Valida con
+   `./init.sh --no-tests`.
+5. Salida: `tasks_ready -> {{TASKS_DIR}}/SPEC-NNN-tareas.md`.
 
 ## Reglas duras
 

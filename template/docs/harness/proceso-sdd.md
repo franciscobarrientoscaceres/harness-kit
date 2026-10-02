@@ -2,7 +2,7 @@
 
 > Flujo Kiro-style: **requirements → design → tasks → code**.
 > El código no se escribe hasta que un humano aprueba el spec.
-> Ejemplo canónico completo en `docs/spec-example/`.
+> Ejemplo canónico completo en `docs/harness/ejemplo-spec/`.
 
 ## Estructura
 
@@ -117,7 +117,7 @@ Secciones fijas (las de Kiro, más "Alternativas descartadas"):
 7. **Alternativas descartadas** — mínimo una, con el porqué.
 
 NO es ingeniería desde primeros principios: apóyate en
-`docs/architecture.md`, `docs/conventions.md` y los steering files, y documenta
+`{{ARCH_DOC}}`, `{{CONV_DOC}}` y los steering files, y documenta
 solo donde tu feature roza sus fronteras.
 
 ## tasks.md
@@ -171,7 +171,7 @@ Reglas:
 ```
 
 `tools/harness_check.py` comprueba que todo criterio aparece en el mapa y que
-cada test citado existe como `def test_...` en `{{TESTS_DIR}}/`. El `reviewer`
+cada test citado existe en los tests del proyecto. El `reviewer`
 además lee los tests para confirmar que de verdad verifican el criterio.
 
 ## Cuándo NO aplica SDD
@@ -188,3 +188,34 @@ retroactivos para el código que ya existía al instalar el arnés.
 | **Importado** (spec que ya existía, p. ej. de Kiro) | `"imported": true` en `{{FEATURE_LIST}}` (lo pone el instalador) | Valida formato Kiro pero los errores son avisos; en `done` no exige trazabilidad | Pide al leader que lo migre; al terminar se quita `imported` |
 
 Las features nuevas nunca llevan `imported`: se validan en modo estricto.
+
+## Formato spec-nnn (un archivo por spec)
+
+Para proyectos que ya escriben sus specs como `SPEC-NNN-*.md` (cabecera con
+`Estado`, requisitos `RF/RN/RNF-NNN-xx`, criterios `CA-NNN-xx` en
+Dado / Cuando / Entonces). Se activa con `[spec] format = "spec-nnn"` en
+`harness.toml`; el instalador lo detecta solo.
+
+| Pieza | Dónde |
+|---|---|
+| Spec (lo que se aprueba) | `{{SPECS_DIR}}/SPEC-NNN-*.md`, con la plantilla del proyecto |
+| Plan de tareas (lo genera el `spec_author`) | `{{TASKS_DIR}}/SPEC-NNN-tareas.md`, tasks jerárquicas con `_Requisitos: RF-…, CA-…_` |
+| Feature | entrada en `{{FEATURE_LIST}}` con `"spec": "<ruta del SPEC>"` |
+
+```
+pending (SPEC Borrador/En revisión) → ⏸ HUMANO/EQUIPO APRUEBA EL SPEC → [spec_author: tareas] → in_progress → [implementer → reviewer] → done → commit
+```
+
+**La puerta humana es el `Estado` del SPEC.** Solo el humano declara un SPEC
+`Aprobada` (con fecha y aprobadores); los agentes nunca lo hacen por su cuenta.
+Después ya no hay otra pausa: el plan de tareas se genera y se implementa.
+
+`./init.sh` comprueba:
+
+- Un SPEC en `Borrador`/`En revisión`: formato (Estado válido, IDs del mismo
+  número de spec, cada `CA` con **Dado** y **Entonces**). Solo avisos.
+- Una feature en `in_progress` o `done`: su SPEC está `Aprobada` con fecha y
+  aprobadores (si no, **falla**: el código no empieza sin aprobación), existe
+  el plan de tareas y cubre todo `CA` y todo `RF` *Must*.
+- Una feature `done`: tasks no opcionales en `[x]` y **cada `CA` citado en
+  algún test** (`it("CA-002-03: …")`, `test_ca_002_03_…`).

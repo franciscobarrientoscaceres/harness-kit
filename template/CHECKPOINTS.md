@@ -8,8 +8,8 @@
 
 - [ ] Existen los archivos base: `AGENTS.md`, `CLAUDE.md`, `init.sh`, `init.ps1`,
       `harness.toml`, `{{FEATURE_LIST}}`, `progress/current.md`, `progress/history.md`.
-- [ ] Existen los docs: `docs/architecture.md`, `docs/conventions.md`,
-      `docs/sdd.md`, `docs/verification.md`.
+- [ ] Existen los docs: `{{ARCH_DOC}}`, `{{CONV_DOC}}`,
+      `docs/harness/proceso-sdd.md`, `docs/harness/verificacion.md`.
 - [ ] Existen los steering files `.kiro/steering/{product,tech,structure}.md`
       sin secciones `<!-- RELLENAR -->` pendientes.
 - [ ] `./init.sh` (o `./init.ps1`) termina con exit code 0.
@@ -23,14 +23,14 @@
 
 ## C3 — El código respeta la arquitectura
 
-- [ ] `{{SRC_DIR}}/` respeta las capas y el layout de `.kiro/steering/structure.md`
-      y `docs/architecture.md`.
+- [ ] El código ({{CODE_DIRS}}) respeta las capas y el layout de `.kiro/steering/structure.md`
+      y `{{ARCH_DOC}}`.
 - [ ] No hay dependencias nuevas que no estén permitidas en `.kiro/steering/tech.md`.
 - [ ] No hay `print()` sueltos para debug, ni TODOs sin contexto.
 
 ## C4 — La verificación es real
 
-- [ ] `{{TESTS_DIR}}/` tiene al menos un test por módulo público de `{{SRC_DIR}}/`.
+- [ ] Cada módulo público del código tiene al menos un test.
 - [ ] Los tests verifican resultados concretos (no solo "no lanza excepción").
 - [ ] Los tests que tocan disco usan directorios temporales reales, no mocks del filesystem.
 - [ ] `{{TEST_CMD_DISPLAY}}` ejecuta > 0 tests y todos verdes.

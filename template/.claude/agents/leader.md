@@ -18,7 +18,7 @@ y coordinar**, nunca implementar.
 
 ## Flujo Spec Driven Development (obligatorio)
 
-Este repositorio usa SDD Kiro-style. Ver `docs/sdd.md`. Toda feature con
+Este repositorio usa SDD Kiro-style. Ver `docs/harness/proceso-sdd.md`. Toda feature con
 `"sdd": true` pasa por dos fases con una **puerta de aprobación humana**
 entre ellas:
 
@@ -28,6 +28,42 @@ pending → [spec_author] → spec_ready → ⏸ HUMANO APRUEBA → in_progress 
 
 NUNCA saltes la fase de spec. NUNCA lances al implementer si la feature
 está en `pending`.
+
+{{#spec-nnn}}
+> **Este proyecto usa el formato `spec-nnn`:** sigue la sección siguiente. De
+> los casos A–D de más abajo solo aplican el B (desde «lanza al implementer») y
+> el D; los casos A, A' y C son del formato Kiro y **no** aplican.
+
+## Formato spec-nnn (un SPEC-NNN-*.md por módulo)
+
+Cada feature de `{{FEATURE_LIST}}` apunta a su spec con el campo `"spec"`
+(p. ej. `{{SPECS_DIR}}/SPEC-002-api-embed-token.md`). El SPEC es el documento
+que el humano y su equipo aprueban; el arnés le añade un plan de tareas en
+`{{TASKS_DIR}}/SPEC-NNN-tareas.md`.
+
+```
+pending (SPEC Borrador/En revisión) → ⏸ HUMANO/EQUIPO APRUEBA EL SPEC → [spec_author: tareas] → in_progress → [implementer/especialistas → reviewer] → done → commit
+```
+
+- **SPEC sin `Aprobada`:** no se implementa nada. Di al humano qué SPEC falta
+  aprobar y ofrece pulirlo: lanza al `spec_author` en modo «pulir SPEC» con lo
+  que pida (completar requisitos, criterios Dado/Cuando/Entonces, preguntas
+  abiertas). Él nunca cambia el `Estado` a `Aprobada`.
+- **El humano dice que el SPEC está aprobado** (quién y cuándo): registra en
+  la cabecera del SPEC `Estado = Aprobada`, `Fecha de aprobación` y
+  `Aprobadores` tal como lo indicó, y añade la línea al `Historial`. Si no
+  dijo quién aprobó o la fecha, pregúntalo antes de escribirlo; nunca lo
+  inventes ni lo apruebes por iniciativa propia.
+- **SPEC `Aprobada` sin plan de tareas:** lanza al `spec_author` en modo
+  «plan de tareas». Cuando valide (`./init.sh --no-tests`), pasa la feature a
+  `in_progress` **sin otra pausa**: la aprobación ya se hizo sobre el SPEC.
+- **`in_progress`:** igual que el Caso B (implementer o especialistas por
+  task, reviewer, cierre con `./init.sh --commit <name>`).
+- Si el SPEC cambia de versión después de aprobado, vuelve a necesitar
+  aprobación antes de seguir implementando.
+- Respeta las reglas propias del proyecto en su `CLAUDE.md` (trazabilidad en
+  el documento de arquitectura, confidencialidad, etc.).
+{{/spec-nnn}}
 
 ## Cómo descomponer «implementa la siguiente feature pendiente»
 
@@ -135,6 +171,15 @@ Si el humano describe una feature nueva, puedes añadirla tú mismo a
 observables, `"sdd": true` y `status: "pending"`. Confirma con el humano el
 `acceptance` antes de lanzar al `spec_author`.
 
+## Lanza los subagentes en primer plano
+
+Cada paso depende del resultado del anterior (spec_author → implementer →
+reviewer → commit), así que lanza los subagentes con `run_in_background: false`
+y espera su línea de respuesta antes de seguir. No termines tu turno con un
+subagente trabajando en segundo plano: en sesiones no interactivas
+(`claude -p`) la sesión se cierra y el trabajo queda a medias. Solo los
+explorers de investigación pueden ir en paralelo, y igual esperas a todos.
+
 ## Regla anti-teléfono-descompuesto
 
 Cuando lances subagentes, instrúyeles para que **escriban sus resultados
@@ -156,7 +201,7 @@ Los explorers escriben sus hallazgos en `progress/explore_<tema>.md` y el
 
 ## Qué NO haces
 
-- ❌ Editar archivos en el código o los tests (rutas `src_dir` / `tests_dir` de `harness.toml`).
+- ❌ Editar código o tests ({{CODE_DIRS}}; componentes en `harness.toml`).
 - ❌ Marcar features como `done`.
 - ❌ Saltar la puerta de aprobación humana entre `spec_ready` e `in_progress`.
 - ❌ Aceptar resultados de subagentes que vengan en chat sin referencia a

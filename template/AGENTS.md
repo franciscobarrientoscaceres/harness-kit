@@ -14,7 +14,7 @@
    antes de tocar código.
 2. Lee `progress/current.md` para entender en qué estado quedó la última sesión.
 3. Lee `{{FEATURE_LIST}}`. Toda feature nueva (`"sdd": true`) pasa por
-   **Spec Driven Development** — ver `docs/sdd.md` y §4 de este archivo.
+   **Spec Driven Development** — ver `docs/harness/proceso-sdd.md` y §4 de este archivo.
 4. Lee el contexto permanente del proyecto en `.kiro/steering/`
    (`product.md`, `tech.md`, `structure.md`).
 
@@ -29,17 +29,16 @@
 | `.kiro/steering/tech.md`     | Stack, comandos, dependencias permitidas                                    | Antes de diseñar o implementar |
 | `.kiro/steering/structure.md`| Layout de carpetas y capas                                                  | Antes de diseñar o implementar |
 | `{{SPECS_DIR}}/<feature>/`           | `requirements.md` + `design.md` + `tasks.md` (Kiro-style)                   | Antes de implementar cualquier feature con `"sdd": true` |
-| `docs/spec-example/`           | Ejemplo canónico del formato Kiro                                           | Al redactar un spec nuevo |
-| `docs/architecture.md`       | Qué significa "hacer un buen trabajo" en este proyecto                      | Antes de implementar |
-| `docs/conventions.md`        | Reglas de estilo, nombres, errores, tests                                   | Antes de escribir código |
-| `docs/sdd.md`              | Proceso SDD: formato Kiro, EARS, puerta de aprobación humana                | Antes de redactar o leer un spec |
-| `docs/verification.md`       | Cómo verificar que tu trabajo funciona (incluye trazabilidad)               | Antes de declarar una tarea como `done` |
+| `docs/harness/ejemplo-spec/`           | Ejemplo canónico del formato Kiro                                           | Al redactar un spec nuevo |
+| `{{ARCH_DOC}}`       | Qué significa "hacer un buen trabajo" en este proyecto                      | Antes de implementar |
+| `{{CONV_DOC}}`        | Reglas de estilo, nombres, errores, tests                                   | Antes de escribir código |
+| `docs/harness/proceso-sdd.md`              | Proceso SDD: formato Kiro, EARS, puerta de aprobación humana                | Antes de redactar o leer un spec |
+| `docs/harness/verificacion.md`       | Cómo verificar que tu trabajo funciona (incluye trazabilidad)               | Antes de declarar una tarea como `done` |
 | `CHECKPOINTS.md`             | Criterios objetivos de "estado final correcto"                              | Para auto-evaluarte |
-| `harness.toml`               | Rutas (`src_dir`, `tests_dir`) y comando de tests                           | Si necesitas saber dónde está el código |
+| `harness.toml`               | Componentes de código, rutas, comandos de tests, formato de spec y git      | Si necesitas saber dónde está el código |
 | `tools/harness_check.py`     | Validador del arnés (lo llaman `init.sh`, `init.ps1` y los hooks)           | Si `init` falla y no entiendes por qué |
 | `.claude/agents/`            | Subagentes `leader`, `spec_author`, `implementer`, `reviewer`               | Si orquestas trabajo |
-| `{{SRC_DIR}}/`               | Código de la aplicación                                                     | Para implementar |
-| `{{TESTS_DIR}}/`             | Tests automáticos (`{{TEST_CMD_DISPLAY}}`)                                  | Para verificar |
+| {{CODE_DIRS}} | Código y tests (tests: `{{TEST_CMD_DISPLAY}}`) | Para implementar y verificar |
 
 ## 3. Reglas duras (no negociables)
 
@@ -56,6 +55,26 @@
 
 ## 4. Flujo de trabajo (SDD)
 
+{{#spec-nnn}}
+Cada feature de `{{FEATURE_LIST}}` apunta a su SPEC (`"spec"`). La SPEC es lo que
+el equipo aprueba; el arnés le agrega un plan de tareas.
+
+```
+pending (SPEC Borrador/En revisión) → ⏸ HUMANO/EQUIPO APRUEBA LA SPEC → [spec_author: tareas] → in_progress → [implementer → reviewer] → done → commit
+```
+
+1. Mientras la SPEC no esté `Aprobada` no se escribe código (el hook avisa si
+   se edita un componente y `./init.sh` falla si una feature avanza sin aprobación).
+2. El humano indica que la SPEC fue aprobada (quién y cuándo); el leader lo
+   registra en la cabecera de la SPEC.
+3. El `spec_author` genera `{{TASKS_DIR}}/SPEC-NNN-tareas.md` (tasks con
+   `_Requisitos: RF-…, CA-…_`) y la feature pasa a `in_progress`.
+4. Implementer (o especialistas) ejecutan las tasks; cada test nombra el `CA` que verifica.
+5. El reviewer aprueba o rechaza; al aprobar, `done` y commit automático.
+
+Detalle en `docs/harness/proceso-sdd.md` (sección «Formato spec-nnn»).
+{{/spec-nnn}}
+{{#kiro}}
 ```
 pending → [spec_author] → spec_ready → ⏸ HUMANO → in_progress → [implementer → reviewer] → done
 ```
@@ -71,6 +90,7 @@ pending → [spec_author] → spec_ready → ⏸ HUMANO → in_progress → [imp
    aprueba o rechaza.
 7. Si aprueba, el implementer marca `done` y mueve el resumen a
    `progress/history.md`.
+{{/kiro}}
 
 ## 5. Cierre de sesión (lifecycle)
 
