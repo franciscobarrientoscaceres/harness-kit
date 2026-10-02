@@ -62,7 +62,10 @@ Relanza al `spec_author` con los cambios pedidos (literalmente) y la ruta
    la ruta `progress/review_<name>.md`. Máximo 2 vueltas; a la tercera, paras
    y consultas al humano.
 5. Si devuelve `APPROVED`, relanza al `implementer` para el cierre (marca
-   `done`, mueve el resumen a `progress/history.md`).
+   `done`, mueve el resumen a `progress/history.md` y ejecuta
+   `./init.sh --commit <name>`, que hace commit solo si todo está en verde).
+   Informa al humano el hash del commit, o por qué no se hizo. Nunca hagas
+   `git commit` ni `git push` por tu cuenta.
 
 ### Caso C — status == `spec_ready` SIN aprobación humana
 

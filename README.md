@@ -150,6 +150,30 @@ git -C harness-kit pull
 python harness-kit/install.py ../mi-proyecto --upgrade
 ```
 
+## Commit automático al cerrar cada feature
+
+Cuando el `reviewer` aprueba, el `implementer` marca la feature `done` y ejecuta:
+
+```bash
+./init.sh --commit <feature>
+```
+
+Ese comando hace commit **si y solo si** pasa todo: la feature está en `done`,
+el spec y la trazabilidad son válidos y **la suite completa de tests** está en
+verde. Si algo falla, no hay commit y el motivo queda en
+`progress/impl_<feature>.md`. Los agentes no hacen `git commit` por su cuenta.
+
+- Un commit por feature (`<feature>: <título>`, con rutas al spec, la
+  trazabilidad y la revisión en el cuerpo), con la identidad de `git config`
+  del repo.
+- Configurable en `harness.toml`:
+  ```toml
+  [git]
+  auto_commit = true   # false = nunca commitear
+  auto_push = false    # true = push tras el commit (desactivado: es irreversible)
+  ```
+- Si el proyecto no es un repo git, simplemente no hace nada.
+
 ## Qué valida `tools/harness_check.py`
 
 Lo ejecutan `init.sh`/`init.ps1` y los hooks. Falla (exit 1) si:

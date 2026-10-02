@@ -33,5 +33,13 @@ post_scope = "related"
 post_timeout = 150
 stop_timeout = 280
 
+[git]
+# Al cerrar una feature, el implementer ejecuta `./init.sh --commit <feature>`: hace
+# commit SOLO si la verificación completa y todos los tests pasan. Usa la identidad
+# de `git config` del repo.
+auto_commit = true
+# Publicar en el remoto tras el commit. Desactivado por defecto: el push es irreversible.
+auto_push = false
+
 [harness]
 min_python = "3.9"

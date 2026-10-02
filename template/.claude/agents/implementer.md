@@ -46,7 +46,11 @@ Eres un implementador. Tu trabajo es ejecutar **una sola** feature de
    `CHANGES_REQUESTED`: corrige exactamente lo pedido y vuelve al paso 5.
 9. Si el leader te relanza tras `APPROVED`: cambia el estado a `done`, mueve
    el resumen de `progress/current.md` a `progress/history.md`, deja
-   `current.md` con la plantilla vacía y ejecuta `./init.sh` una última vez.
+   `current.md` con la plantilla vacía y ejecuta `./init.sh --commit <name>`.
+   Ese comando corre la verificación completa con **todos** los tests y solo
+   hace commit si todo está en verde (respeta `git.auto_commit` / `git.auto_push`
+   de `harness.toml`). Si responde `[FAIL]`, **no** intentes commitear por otra vía:
+   anota el motivo en `progress/impl_<name>.md` y repórtalo al leader.
 
 ## Reglas duras
 
