@@ -865,6 +865,8 @@ def _targeted(command: str, targets: list[Path], root: Path) -> str:
 def _run_component(root: Path, config: dict, comp: dict, report: Report, quiet_output: bool, *,
                    fast: bool, timeout: int | None, targets: list[Path] | None, label: str) -> tuple[str, bool]:
     """Corre los tests de un componente. Devuelve (salida, ¿quedó en verde o sin tests?)."""
+    if not (comp["test_fast"] if fast else "") and not comp["test"] and not comp["test_related"]:
+        return "", True  # componente sin suite configurada (p. ej. sql/, infra/): nada que correr
     if comp["python"] and comp["tests_dir"]:
         if not (root / comp["tests_dir"]).is_dir():
             report.warn(f"{label}La carpeta {comp['tests_dir']}/ no existe todavía")
