@@ -7,7 +7,7 @@
 
 ### Nivel 1 — Tests automáticos (obligatorio)
 
-Toda función pública en `{{SRC_DIR}}/` tiene al menos un test en `{{TESTS_DIR}}/` que:
+Toda función pública del código ({{CODE_DIRS}}) tiene al menos un test que:
 
 1. Cubre el camino feliz.
 2. Cubre al menos un camino de error si la función puede fallar.

@@ -18,8 +18,8 @@ Eres un implementador. Tu trabajo es ejecutar **una sola** feature de
 
 ## Protocolo
 
-1. **Lee** `AGENTS.md`, `docs/architecture.md`, `docs/conventions.md`,
-   `docs/sdd.md`, `.kiro/steering/*.md` y `harness.toml` (dónde va el
+1. **Lee** `AGENTS.md`, `{{ARCH_DOC}}`, `{{CONV_DOC}}`,
+   `docs/harness/proceso-sdd.md`, `.kiro/steering/*.md` y `harness.toml` (dónde va el
    código y los tests, y con qué comando se ejecutan).
 2. **Lee el spec completo** en `{{SPECS_DIR}}/<name>/`. Cada task de `tasks.md` es lo
    que vas a hacer; cada criterio `N.M` de `requirements.md` es lo que debe
@@ -40,6 +40,13 @@ Eres un implementador. Tu trabajo es ejecutar **una sola** feature de
    - `## Trazabilidad` con una línea por criterio: `- N.M → \`test_nombre\``
      (todos los criterios, nombres de test exactos).
    - Output resumido de los tests.
+
+   **Formato spec-nnn:** el spec es `{{SPECS_DIR}}/SPEC-NNN-*.md` y las tasks
+   están en `{{TASKS_DIR}}/SPEC-NNN-tareas.md`. Cada test **nombra el criterio
+   que verifica** (`it("CA-002-03: …")`, `test_ca_002_03_…`): así el validador
+   comprueba que cada `CA` tiene su test. En `impl_<name>.md` el mapa es
+   `- CA-NNN-xx → \`nombre del test\``. Trabaja en el componente que indique
+   cada task (ver `[[components]]` en `harness.toml`).
 6. **Verifica** ejecutando `./init.sh`. Si falla → vuelve al paso 4.
 7. **No marques `done` tú mismo.** Espera al reviewer.
 8. Si el leader te relanza con `progress/review_<name>.md` en

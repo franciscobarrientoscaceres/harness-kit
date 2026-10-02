@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-KIT_VERSION = "0.2.0"
+KIT_VERSION = "0.3.0"
 KIT_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = KIT_DIR / "template"
 MARKER = "<!-- harness-kit -->"
@@ -42,13 +42,36 @@ KIT_OWNED = {
     "tools/harness_check.py",
     "init.sh",
     "init.ps1",
-    "docs/sdd.md",
-    "docs/spec-example/requirements.md",
-    "docs/spec-example/design.md",
-    "docs/spec-example/tasks.md",
+    "docs/harness/proceso-sdd.md",
+    "docs/harness/verificacion.md",
+    "docs/harness/ejemplo-spec/requirements.md",
+    "docs/harness/ejemplo-spec/design.md",
+    "docs/harness/ejemplo-spec/tasks.md",
     *(f".claude/agents/{name}.md" for name in AGENT_NAMES),
 }
-ADOPT_REPLACEABLE = {"CHECKPOINTS.md", "docs/verification.md"}
+ADOPT_REPLACEABLE = {"CHECKPOINTS.md"}
+# Docs de proceso de versiones anteriores (del kit o del arnés original) que ahora viven en
+# docs/harness/. Solo se retiran si el contenido lo confirma (firma) y el nombre coincide
+# exactamente, también en mayúsculas: en Windows docs/sdd.md y docs/SDD.md son el mismo archivo.
+LEGACY_DOCS = {
+    "docs/specs.md": ("spec_ready",),
+    "docs/sdd.md": ("Spec Driven Development (SDD) — formato Kiro",),
+    "docs/verification.md": ("el agente no dice \"funciona\", lo demuestra",),
+    "docs/spec-example/requirements.md": ("Ejemplo canónico del formato Kiro",),
+    "docs/spec-example/design.md": ("# Design — cli_recent",),
+    "docs/spec-example/tasks.md": ("# Tasks — cli_recent",),
+    "specs/_template/requirements.md": ("Ejemplo canónico del formato Kiro",),
+    "specs/_template/design.md": ("# Design — cli_recent",),
+    "specs/_template/tasks.md": ("# Tasks — cli_recent",),
+}
+CONDITIONAL_BLOCK = re.compile(r"\{\{#([\w-]+)\}\}\n(.*?)\{\{/\1\}\}\n", re.DOTALL)
+RAW_VALUES = {"COMPONENTS", "CODE_LAYOUT"}  # bloques ya formateados: no se escapan
+JS_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"]
+SPEC_NNN_FILE = re.compile(r"^SPEC-\d{3}-.+\.md$")
+ARCH_CANDIDATES = ("docs/SDD.md", "docs/ARCHITECTURE.md", "ARCHITECTURE.md", "docs/arquitectura.md")
+CONV_CANDIDATES = ("docs/CONVENTIONS.md", "CONTRIBUTING.md", "docs/convenciones.md")
+DEFAULT_ARCH_DOC = "docs/architecture.md"
+DEFAULT_CONV_DOC = "docs/conventions.md"
 SIDECAR_WITH_POINTER = {
     "CLAUDE.md": "\n{marker}\n@CLAUDE.harness.md\n",
     "AGENTS.md": "\n{marker}\n> **Arnés SDD (harness-kit):** el flujo multiagente y Spec Driven Development "
@@ -207,6 +230,8 @@ def inspect_project(target: Path) -> dict:
         "legacy_hooks": legacy_hooks,
         "venv": venv,
         "is_code": looks_like_code_project(target),
+        "spec_nnn_dir": detect_spec_nnn(target),
+        "node_components": detect_node_components(target),
     }
 
 
@@ -264,6 +289,72 @@ def detect_python_cmd() -> str:
     return "python"
 
 
+def _exact_file(target: Path, rel: str) -> bool:
+    path = target / rel
+    return path.is_file() and path.name in os.listdir(path.parent)
+
+
+def detect_spec_nnn(target: Path) -> str:
+    """Carpeta con specs SPEC-NNN-*.md (con campo Estado), o "" si no hay."""
+    for dirpath, dirnames, filenames in os.walk(target):
+        dirnames[:] = [d for d in dirnames if d not in checker.IGNORED_DIRS and not d.startswith(".")]
+        if Path(dirpath).relative_to(target).parts[:1] in (("node_modules",),):
+            continue
+        for name in filenames:
+            if SPEC_NNN_FILE.match(name) and "| Estado |" in _read(Path(dirpath, name)):
+                return Path(dirpath).relative_to(target).as_posix()
+    return ""
+
+
+def detect_node_components(target: Path) -> list[dict]:
+    components = []
+    candidates = [target] + sorted(p for p in target.iterdir() if p.is_dir() and p.name not in checker.IGNORED_DIRS
+                                   and not p.name.startswith("."))
+    for base in candidates:
+        manifest = base / "package.json"
+        if not manifest.is_file():
+            continue
+        try:
+            package = json.loads(_read(manifest))
+        except ValueError:
+            continue
+        rel = "." if base == target else base.name
+        deps = {**package.get("dependencies", {}), **package.get("devDependencies", {})}
+        prefix = "" if rel == "." else f" --prefix {rel}"
+        component = {"name": package.get("name") or rel, "path": rel, "extensions": JS_EXTENSIONS,
+                     "test": f"npm{prefix} test --silent" if "test" in package.get("scripts", {}) else ""}
+        if "vitest" in deps:
+            component["test_related"] = f"npm{prefix} exec -- vitest related {{files}} --run"
+        elif "jest" in deps:
+            component["test_related"] = f"npm{prefix} exec -- jest --findRelatedTests {{files}}"
+        components.append(component)
+    return components
+
+
+def parse_component_arg(spec: str) -> dict:
+    """`nombre=ruta[:ext1,ext2[:comando de tests]]`"""
+    name, _, rest = spec.partition("=")
+    parts = rest.split(":", 2)
+    path = (parts[0] or name).strip().strip("/")
+    exts = [e.strip() for e in parts[1].split(",") if e.strip()] if len(parts) > 1 else []
+    return {"name": name.strip(), "path": path,
+            "extensions": [e if e.startswith(".") else f".{e}" for e in exts],
+            "test": parts[2].strip() if len(parts) > 2 else ""}
+
+
+def render_components(components: list[dict]) -> str:
+    blocks = []
+    for comp in components:
+        lines = ["[[components]]"]
+        for key in ("name", "path", "extensions", "tests_dir", "test", "test_fast", "test_related"):
+            value = comp.get(key)
+            if value in (None, "", []):
+                continue
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def resolve_values(target: Path, args: argparse.Namespace, profile: dict) -> dict[str, str]:
     """Prioridad: flags > harness.toml existente > detección."""
     cfg = profile["existing_config"]
@@ -285,15 +376,50 @@ def resolve_values(target: Path, args: argparse.Namespace, profile: dict) -> dic
         feature_list = "feature_list.json"
     test_cmd = args.test_cmd or commands.get("test") or detect_test_cmd(target, tests_dir)
     python_cmd = args.python or detect_python_cmd()
+
+    spec_nnn_dir = profile["spec_nnn_dir"]
+    spec_cfg = (cfg or {}).get("spec", {})
+    spec_format = args.spec_format or spec_cfg.get("format") or ("spec-nnn" if spec_nnn_dir else "kiro")
+    if spec_format == "spec-nnn" and not (args.specs_dir or (cfg and paths.get("specs_dir"))):
+        specs_dir = spec_nnn_dir or "docs/specs"
+    tasks_dir = spec_cfg.get("tasks_dir") or (f"{specs_dir.rstrip('/')}/tareas" if spec_format == "spec-nnn" else "")
+
+    if args.component:
+        components = [parse_component_arg(c) for c in args.component]
+    elif cfg and cfg.get("components"):
+        components = checker.get_components(cfg)
+    else:
+        components = profile["node_components"]
+    src_dir = args.src or paths.get("src_dir") or detect_src(target)
+    if components:
+        code_dirs = ", ".join(f"`{c['path']}/`" for c in components)
+        code_layout = "".join(f"├── {c['path']}/".ljust(26) + f"# componente {c['name']}\n" for c in components)
+        test_display = "./init.sh --tests-only"
+    else:
+        code_dirs = f"`{src_dir}/` y `{tests_dir}/`"
+        code_layout = (f"├── {src_dir}/".ljust(26) + "# Código de la aplicación\n"
+                       + f"├── {tests_dir}/".ljust(26) + "# Tests\n")
+        test_display = test_cmd.replace("{python}", python_cmd).replace("{tests_dir}", tests_dir)
+    arch_doc = args.architecture_doc or paths.get("architecture_doc") or next(
+        (c for c in ARCH_CANDIDATES if _exact_file(target, c)), DEFAULT_ARCH_DOC)
+    conv_doc = args.conventions_doc or paths.get("conventions_doc") or next(
+        (c for c in CONV_CANDIDATES if _exact_file(target, c)), DEFAULT_CONV_DOC)
     return {
         "PROJECT_NAME": args.name or (cfg or {}).get("project", {}).get("name") or detect_name(target),
         "KIT_VERSION": KIT_VERSION,
-        "SRC_DIR": args.src or paths.get("src_dir") or detect_src(target),
+        "SRC_DIR": src_dir,
         "TESTS_DIR": tests_dir,
         "SPECS_DIR": specs_dir.rstrip("/"),
+        "ARCH_DOC": arch_doc,
+        "CONV_DOC": conv_doc,
+        "SPEC_FORMAT": spec_format,
+        "TASKS_DIR": tasks_dir,
+        "COMPONENTS": render_components(components),
+        "CODE_DIRS": code_dirs,
+        "CODE_LAYOUT": code_layout,
         "FEATURE_LIST": feature_list,
         "TEST_CMD": test_cmd,
-        "TEST_CMD_DISPLAY": test_cmd.replace("{python}", python_cmd).replace("{tests_dir}", tests_dir),
+        "TEST_CMD_DISPLAY": test_display,
         "PYTHON_CMD": python_cmd,
         "INSTALL_DATE": datetime.date.today().isoformat(),
     }
@@ -323,12 +449,25 @@ class Installer:
         print(f"  {action:<12} {rel}")
 
     def dest_rel(self, rel: str) -> str:
-        return self.values["FEATURE_LIST"] if rel == "feature_list.json" else rel
+        mapping = {
+            "feature_list.json": self.values["FEATURE_LIST"],
+            DEFAULT_ARCH_DOC: self.values["ARCH_DOC"],
+            DEFAULT_CONV_DOC: self.values["CONV_DOC"],
+        }
+        return mapping.get(rel, rel)
+
+    def is_project_doc(self, rel: str) -> bool:
+        """Documento propio del proyecto elegido como arquitectura/convenciones: nunca se pisa."""
+        custom = {self.values["ARCH_DOC"], self.values["CONV_DOC"]} - {DEFAULT_ARCH_DOC, DEFAULT_CONV_DOC}
+        return rel in custom
 
     def render(self, rel: str, text: str) -> str:
+        # Bloques condicionales por formato de spec: {{#kiro}}…{{/kiro}}, {{#spec-nnn}}…{{/spec-nnn}}
+        fmt = self.values.get("SPEC_FORMAT", "kiro")
+        text = CONDITIONAL_BLOCK.sub(lambda m: m.group(2) if m.group(1) == fmt else "", text)
         suffix = Path(rel).suffix
         for key, value in self.values.items():
-            if suffix in (".json", ".toml"):
+            if suffix in (".json", ".toml") and key not in RAW_VALUES:
                 value = json.dumps(value)[1:-1]
             text = text.replace("{{" + key + "}}", value)
         if suffix == ".sh":
@@ -380,6 +519,9 @@ class Installer:
             return
         if rel == ".claude/settings.json":
             self.merge_settings(rel, current, text)
+            return
+        if self.is_project_doc(rel):
+            self.record("sin cambios", f"{rel} (documento del proyecto)")
             return
         if rel in SIDECAR_WITH_POINTER and not is_harness_file(rel, current):
             # Un CLAUDE.md / AGENTS.md escrito por el usuario nunca se reemplaza, ni con --force.
@@ -461,25 +603,22 @@ class Installer:
             self.record("hook retirado", hook[:90])
 
     def retire_legacy_docs(self) -> None:
-        """En adopt/upgrade: retira docs de proceso que el kit sustituye (con backup)."""
+        """En adopt/upgrade/force: retira docs de proceso que ahora viven en docs/harness/ (con backup)."""
         if self.mode not in ("adopt", "upgrade", "force"):
             return
-        candidates = ["docs/specs.md"]
-        candidates += [f"specs/_template/{f}" for f in checker.SPEC_FILES]
-        for rel in candidates:
+        for rel, signatures in LEGACY_DOCS.items():
             path = self.target / rel
-            if not path.is_file():
-                continue
+            if not path.is_file() or path.name not in os.listdir(path.parent):
+                continue  # no existe, o existe con otra capitalización (p. ej. docs/SDD.md del proyecto)
             text = _read(path)
-            ours_v01 = rel.startswith("specs/_template/") and "Ejemplo canónico del formato Kiro" in text
-            if not (is_harness_file(rel, text) or ours_v01 or (rel == "docs/specs.md" and "formato Kiro" in text)):
+            if not any(sig in text for sig in signatures):
                 continue
             self.backup(rel)
             if not self.dry_run:
                 path.unlink()
                 if not any(path.parent.iterdir()):
                     path.parent.rmdir()
-            self.record("retirado", f"{rel} (sustituido por docs/sdd.md o docs/spec-example/)")
+            self.record("retirado", f"{rel} (ahora en docs/harness/)")
 
     def ensure_lines(self, rel: str, lines: tuple[str, ...]) -> None:
         path = self.target / rel
@@ -504,7 +643,32 @@ class Installer:
         features = data.setdefault("features", [])
         known = {f.get("name") for f in features}
         next_id = max((f.get("id", 0) for f in features if isinstance(f.get("id"), int)), default=0) + 1
+        # (spec-nnn se importa antes; Kiro, después)
         imported = []
+        if self.values.get("SPEC_FORMAT") == "spec-nnn":
+            known_specs = {f.get("spec") for f in features}
+            spec_root = self.target / self.values["SPECS_DIR"]
+            for path in sorted(spec_root.glob("SPEC-*.md")) if spec_root.is_dir() else []:
+                rel_spec = path.relative_to(self.target).as_posix()
+                if not SPEC_NNN_FILE.match(path.name) or rel_spec in known_specs:
+                    continue
+                title = re.search(r"^#\s+SPEC-\d{3}\s*[:—-]\s*(.+)$", _read(path), re.MULTILINE)
+                estado = checker.parse_spec_nnn(_read(path))["estado"] or "?"
+                features.append({
+                    "id": next_id,
+                    "name": path.stem.lower(),
+                    "title": title.group(1).strip() if title else path.stem,
+                    "spec": rel_spec,
+                    "sdd": True,
+                    "status": "pending",
+                })
+                next_id += 1
+                imported.append(f"{path.stem} (pending, spec {estado})")
+            if imported:
+                self.write(rel, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+                for item in imported:
+                    self.record("importado", f"{rel} ← {item}")
+            return imported
         busy = any(f.get("status") == "in_progress" for f in features)
         for spec_dir in spec_dirs(self.target / self.values["SPECS_DIR"]):
             if spec_dir.name in known:
@@ -582,7 +746,11 @@ def print_profile(profile: dict, values: dict[str, str]) -> None:
         print("  - GitHub spec-kit (.specify/ o specs/*/spec.md): los specs del arnés irán a .kiro/specs/")
     if profile["feature_list_state"] == "incompatible" and values["FEATURE_LIST"] != "feature_list.json":
         print(f"  - feature_list.json con otro formato: el arnés usará {values['FEATURE_LIST']}")
-    if not profile["is_code"]:
+    if profile["spec_nnn_dir"]:
+        print(f"  - specs SPEC-NNN en {profile['spec_nnn_dir']}/: formato spec-nnn (Estado, RF/CA, Dado/Cuando/Entonces)")
+    for comp in profile["node_components"]:
+        print(f"  - componente Node: {comp['path']}/ ({comp['test'] or 'sin script test'})")
+    if not profile["is_code"] and not profile["spec_nnn_dir"] and not profile["node_components"]:
         print("  - sin código Python (parece un repo de documentación o planificación)")
     if profile["venv"]:
         print(f"  - virtualenv {profile['venv']}/: los tests se ejecutarán con su intérprete")
@@ -628,6 +796,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tests", help="carpeta de tests")
     parser.add_argument("--specs-dir", help="carpeta de specs (por defecto: specs, o .kiro/specs si hay Kiro/spec-kit)")
     parser.add_argument("--feature-list", help="archivo de features (por defecto: feature_list.json)")
+    parser.add_argument("--spec-format", choices=("kiro", "spec-nnn"), help="formato de spec (autodetectado)")
+    parser.add_argument("--component", action="append", metavar="NOMBRE=RUTA[:EXTS[:TEST]]",
+                        help="componente de código, repetible (p. ej. api=api:.js,.ts:npm --prefix api test)")
+    parser.add_argument("--architecture-doc", help="doc de arquitectura del proyecto (por defecto: docs/architecture.md)")
+    parser.add_argument("--conventions-doc", help="doc de convenciones/calidad (por defecto: docs/conventions.md)")
     parser.add_argument("--test-cmd", help="comando de tests; admite {python} y {tests_dir}")
     parser.add_argument("--python", help="comando de Python para los permisos (por defecto: autodetectado)")
     mode = parser.add_mutually_exclusive_group()
@@ -652,12 +825,14 @@ def main(argv: list[str] | None = None) -> int:
     mode = next((m for m in ("adopt", "upgrade", "keep_existing", "force") if getattr(args, m)), "install")
 
     print(f"harness-kit {KIT_VERSION} → {target}  [modo: {mode}]" + ("  (dry-run)" if args.dry_run else ""))
-    for key in ("PROJECT_NAME", "SRC_DIR", "TESTS_DIR", "SPECS_DIR", "FEATURE_LIST", "TEST_CMD_DISPLAY"):
+    for key in ("PROJECT_NAME", "CODE_DIRS", "SPEC_FORMAT", "SPECS_DIR", "FEATURE_LIST", "ARCH_DOC", "CONV_DOC",
+                "TEST_CMD_DISPLAY"):
         print(f"  {key:<17}= {values[key]}")
     print()
     print_profile(profile, values)
 
-    if not profile["is_code"] and not profile["ours"] and mode != "force":
+    planned = bool(profile["spec_nnn_dir"] or profile["node_components"] or args.component)
+    if not profile["is_code"] and not planned and not profile["ours"] and mode != "force":
         print("No encuentro un proyecto Python con código y tests (no hay pyproject.toml, src/, tests/")
         print("ni paquetes). harness-kit está hecho para Python: corre pytest/unittest y sus hooks miran")
         print("archivos .py. En un repo de documentación, en uno que aún no empieza el código o en otro")
@@ -699,15 +874,23 @@ def main(argv: list[str] | None = None) -> int:
         for warning in warnings:
             print(f"  - {warning}")
 
+    docs_to_fill = [d for d, default in ((values["ARCH_DOC"], DEFAULT_ARCH_DOC), (values["CONV_DOC"], DEFAULT_CONV_DOC))
+                    if d == default]
     steps = [
-        "Rellena .kiro/steering/{product,tech,structure}.md, docs/architecture.md y docs/conventions.md "
-        "(o pide a Claude: «rellena los steering files a partir del código»).",
-        f"Añade features a {values['FEATURE_LIST']} con \"sdd\": true y status \"pending\".",
+        "Rellena .kiro/steering/{product,tech,structure}.md"
+        + (f" y {', '.join(docs_to_fill)}" if docs_to_fill else "")
+        + " (o pide a Claude: «rellena los steering files a partir del repo»).",
     ]
+    if values["SPEC_FORMAT"] == "spec-nnn":
+        steps.append(f"Cada SPEC de {values['SPECS_DIR']}/ es una feature en {values['FEATURE_LIST']} (pending hasta "
+                     "que se apruebe). Cuando el equipo apruebe una, dile al leader: «la SPEC-00X fue aprobada por "
+                     "<quiénes> el <fecha>»; él registra la aprobación, genera el plan de tareas e implementa.")
+    else:
+        steps.append(f"Añade features a {values['FEATURE_LIST']} con \"sdd\": true y status \"pending\".")
     if profile["legacy_specs"]:
         steps.append("Pide al leader: «migra los specs legacy a formato Kiro» "
                      f"({', '.join(profile['legacy_specs'])}).")
-    if imported:
+    if imported and values["SPEC_FORMAT"] != "spec-nnn":
         steps.append("Revisa las features importadas (\"imported\": true): las que están en spec_ready esperan "
                      "tu aprobación; la que quedó en in_progress (spec ya empezado) se retoma con «continúa con la "
                      "feature en curso».")

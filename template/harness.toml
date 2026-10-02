@@ -11,6 +11,10 @@ specs_dir = "{{SPECS_DIR}}"
 feature_list = "{{FEATURE_LIST}}"
 progress_dir = "progress"
 steering_dir = ".kiro/steering"
+# Documentos del proyecto que los agentes leen como estándar de calidad y estilo.
+# Pueden apuntar a documentos que el proyecto ya tenía (p. ej. su SDD).
+architecture_doc = "{{ARCH_DOC}}"
+conventions_doc = "{{CONV_DOC}}"
 
 [commands]
 # Intérprete con el que se corren los tests. Vacío = autodetectar el virtualenv
@@ -29,6 +33,9 @@ post_tests = true
 # completa corre en el hook Stop, y solo si cambió código desde el último verde.
 # "all": la suite completa en cada edición (o commands.test_fast si está definido).
 post_scope = "related"
+# Antes de editar código de un componente sin una feature en curso con spec Aprobada:
+# "warn" avisa, "block" impide la edición, "off" no comprueba nada.
+pre_gate = "warn"
 # Segundos máximos (deben ser menores que el "timeout" de .claude/settings.json).
 post_timeout = 150
 stop_timeout = 280
@@ -40,6 +47,23 @@ stop_timeout = 280
 auto_commit = true
 # Publicar en el remoto tras el commit. Desactivado por defecto: el push es irreversible.
 auto_push = false
+# Antes de commitear busca credenciales (claves, tokens, contraseñas en cadenas de
+# conexión) y archivos que no se versionan (.env, .pbix, .pfx, .pem…).
+secret_scan = true
+
+[spec]
+# "kiro": requirements.md + design.md + tasks.md por feature en specs_dir/<feature>/.
+# "spec-nnn": un SPEC-NNN-*.md por módulo (Estado, RF/RN/RNF, CA Dado/Cuando/Entonces)
+#             y su plan de tareas en tasks_dir/SPEC-NNN-tareas.md.
+format = "{{SPEC_FORMAT}}"
+tasks_dir = "{{TASKS_DIR}}"
 
 [harness]
 min_python = "3.9"
+
+# Componentes de código. Sin ninguno, el proyecto es Python con paths.src_dir/tests_dir.
+# Cada componente: name, path, extensions y comandos de tests (opcionales):
+#   test          suite completa del componente ({python}, {path}, {tests_dir})
+#   test_fast     alternativa rápida para el hook tras cada edición
+#   test_related  solo los tests relacionados con el archivo editado ({files})
+{{COMPONENTS}}

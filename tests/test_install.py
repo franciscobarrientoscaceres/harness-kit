@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 KIT = Path(__file__).resolve().parent.parent
-SPEC_EXAMPLE = KIT / "template" / "docs" / "spec-example"
+SPEC_EXAMPLE = KIT / "template" / "docs" / "harness" / "ejemplo-spec"
 
 _spec = importlib.util.spec_from_file_location("install", KIT / "install.py")
 install = importlib.util.module_from_spec(_spec)
@@ -85,6 +85,13 @@ class TestFreshInstall(InstallCase):
             if path.is_file():
                 self.assertNotIn("{{", path.read_text(encoding="utf-8"), path)
         self.assertIn("`app/`", self.read("CLAUDE.md"))
+
+    def test_kiro_projects_get_only_kiro_rules(self) -> None:
+        self.install()
+        claude = self.read("CLAUDE.md")
+        self.assertIn("entre `spec_ready` e", claude)
+        self.assertNotIn("No crees specs Kiro", claude)
+        self.assertNotIn("Formato spec-nnn (un SPEC", self.read(".claude/agents/leader.md"))
 
     def test_generated_json_is_valid(self) -> None:
         self.install()
