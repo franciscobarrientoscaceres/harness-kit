@@ -1,0 +1,33 @@
+# Configuración del arnés. La leen tools/harness_check.py y los agentes.
+
+[project]
+name = "{{PROJECT_NAME}}"
+kit_version = "{{KIT_VERSION}}"
+
+[paths]
+src_dir = "{{SRC_DIR}}"
+tests_dir = "{{TESTS_DIR}}"
+specs_dir = "{{SPECS_DIR}}"
+feature_list = "{{FEATURE_LIST}}"
+progress_dir = "progress"
+steering_dir = ".kiro/steering"
+
+[commands]
+# Intérprete con el que se corren los tests. Vacío = autodetectar el virtualenv
+# del proyecto (.venv/, venv/, env/) y, si no hay, el Python que ejecuta el check.
+python = ""
+# {python} se sustituye por ese intérprete y {tests_dir} por paths.tests_dir.
+test = "{{TEST_CMD}}"
+# Comando más rápido para el hook que corre tras cada edición (p. ej. solo
+# tests unitarios: "{python} -m pytest -q -x tests/unit"). Vacío = usa `test`.
+test_fast = ""
+
+[hooks]
+# Correr tests tras cada edición de un .py (desactívalo si la suite es muy lenta).
+post_tests = true
+# Segundos máximos (deben ser menores que el "timeout" de .claude/settings.json).
+post_timeout = 150
+stop_timeout = 280
+
+[harness]
+min_python = "3.9"

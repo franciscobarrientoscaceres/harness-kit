@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/init.sh\" --hook post",
+            "timeout": 180
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/init.sh\" --hook stop",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(./init.sh*)",
+      "Bash(bash init.sh*)",
+      "Bash({{PYTHON_CMD}} tools/harness_check.py*)",
+      "Bash({{PYTHON_CMD}} -m pytest*)",
+      "Bash({{PYTHON_CMD}} -m unittest*)",
+      "PowerShell(./init.ps1*)"
+    ]
+  }
+}

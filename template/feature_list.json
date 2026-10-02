@@ -1,0 +1,25 @@
+{
+  "project": "{{PROJECT_NAME}}",
+  "description": "Describe el proyecto en una línea.",
+  "rules": {
+    "one_feature_at_a_time": true,
+    "require_tests_to_close": true,
+    "require_approved_spec_to_implement": true,
+    "valid_status": ["pending", "spec_ready", "in_progress", "done", "blocked"],
+    "sdd_required_when": "feature has \"sdd\": true"
+  },
+  "$example_feature": {
+    "id": 1,
+    "name": "snake_case_name",
+    "title": "Título corto",
+    "description": "Qué hace la feature y por qué.",
+    "acceptance": [
+      "Criterio observable y verificable 1",
+      "Criterio observable y verificable 2",
+      "Los tests cubren: caso feliz, caso de error"
+    ],
+    "sdd": true,
+    "status": "pending"
+  },
+  "features": []
+}
